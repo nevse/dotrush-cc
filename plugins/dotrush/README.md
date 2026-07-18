@@ -31,8 +31,8 @@ server binary with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp
 DotRush loads a project only when the workspace resolves to a single `.sln/.slnx/.csproj`. In a
 monorepo/multi-project root it finds many and **loads nothing** — every query returns "No symbols found".
 
-**Recommended — the `dotrush-setup` skill (interactive, no config file).** Ask Claude to *"set up the
-DotRush project"* (or invoke the `dotrush-setup` skill). It finds the `.sln/.slnx/.csproj` candidates in
+**Recommended — the `dotrush-pick-project` skill (interactive, no config file).** Ask Claude to *"set up the
+DotRush project"* (or invoke the `dotrush-pick-project` skill). It finds the `.sln/.slnx/.csproj` candidates in
 your workspace, **asks which one to use**, applies it live (no restart), and remembers the choice — stored
 in the plugin's data dir (`target.json`) and auto-replayed at startup on future sessions. **Nothing is
 written into your repo.** If you never picked one, it asks; once picked, it doesn't ask again.
@@ -49,7 +49,15 @@ There is **no `/lsp` command** in current Claude Code. To check:
 - Open **`/plugin` → Installed → `dotrush`** — it lists the `csharp` LSP server. The **Errors** tab shows
   start-up failures (missing `python3`, download errors, etc.).
 - Or just use it: ask Claude to "find references to <symbol>" / "go to definition" in a `.cs` file. Real
-  results = it's working. "No symbols" = no project loaded → run `dotrush-setup`.
+  results = it's working. "No symbols" = no project loaded → run `dotrush-pick-project`.
+
+## Multiple sessions / projects
+
+Each Claude Code session spawns its own DotRush server, and all runtime state (chosen project, FIFO, log)
+is scoped **per workspace** under `${CLAUDE_PLUGIN_DATA}/ws/<hash-of-project-dir>/`. So you can run several
+sessions on **different** projects at once — each keeps its own project choice and injection FIFO, no
+collision. Two sessions on the **same** project dir share that workspace's FIFO (LSP navigation still works
+per session; only live injection is ambiguous there).
 
 ## Capabilities (via the Claude Code `LSP` tool)
 
@@ -65,17 +73,20 @@ build registers no call-hierarchy handler. Use `findReferences` instead.
 The proxy forwards Claude ⇄ DotRush verbatim and injects newline-delimited JSON-RPC written to a FIFO,
 at frame boundaries under a lock — so injection never desyncs request/response pairing.
 
-Find the FIFO + log (they live in the plugin's data dir):
+The FIFO + log live in a **per-workspace** dir (`${CLAUDE_PLUGIN_DATA}/ws/<hash>/`) so concurrent sessions
+on different projects don't collide. Find the ones for the *current* workspace by matching the recorded
+project path:
 ```bash
-find ~/.claude/plugins -name inject.fifo   # -> $DOTRUSH_INJECT_FIFO
-find ~/.claude/plugins -name proxy.log     # logs INJECT events + server->client traffic
+ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
+WSDIR=$(dirname "$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)")
+FIFO="$WSDIR/inject.fifo"     # inject here
+LOG="$WSDIR/proxy.log"        # INJECT events + server->client traffic
 ```
 
 Inject (`jsonrpc:"2.0"` auto-added):
 ```bash
-FIFO=$(find ~/.claude/plugins -name inject.fifo | head -1)
 echo '{"method":"$/setTrace","params":{"value":"verbose"}}' > "$FIFO"
-tail -f "$(find ~/.claude/plugins -name proxy.log | head -1)"
+tail -f "$LOG"
 ```
 
 Prefer **notifications** (no `id`, fire-and-forget, silently ignored if unknown). A **request** (with `id`)
@@ -93,10 +104,10 @@ client tolerates it.
 
 ## Live reconfigure + reload (no restart)
 
-Switch target solution live by injecting a config change then a reload:
+Switch target solution live by injecting a config change then a reload (`$FIFO` = this workspace's FIFO,
+found as above):
 
 ```bash
-FIFO=$(find ~/.claude/plugins -name inject.fifo | head -1)
 echo '{"method":"workspace/didChangeConfiguration","params":{"settings":{"dotrush":{"roslyn":{"projectOrSolutionFiles":["/abs/Other.sln"],"restoreProjectsBeforeLoading":false}}}}}' > "$FIFO"
 echo '{"method":"dotrush/reloadWorkspace","params":{"workspaceFolders":[{"uri":"file:///abs/workspace","name":"ws"}]}}' > "$FIFO"
 ```
@@ -109,7 +120,7 @@ Notes (learned while verifying this):
 
 ## Troubleshooting
 
-- **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-setup`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
+- **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-pick-project`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
 - **Server didn't download** → check `curl`/`unzip` exist; run `install-dotrush.sh` manually; inspect `proxy.log`.
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.

@@ -19,6 +19,7 @@ Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_INJECT_FIFO     control FIFO path
     DOTRUSH_PROXY_LOG       log file path (empty string disables logging)
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -32,12 +33,20 @@ EXE = "DotRush.exe" if os.name == "nt" else "DotRush"
 SERVER_DIR = os.environ.get("DOTRUSH_SERVER_DIR") or os.path.join(HERE, "..", "server")
 REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, EXE)
 INSTALL_SCRIPT = os.environ.get("DOTRUSH_INSTALL_SCRIPT") or os.path.join(HERE, "..", "scripts", "install-dotrush.sh")
-FIFO_PATH = os.environ.get("DOTRUSH_INJECT_FIFO") or os.path.join(SERVER_DIR, "..", "inject.fifo")
-LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(SERVER_DIR, "..", "proxy.log"))
+# Runtime files are scoped PER WORKSPACE so concurrent Claude sessions on different
+# projects don't share one FIFO / target / log. Key = the project dir (${CLAUDE_PROJECT_DIR},
+# else cwd). The DotRush server binary (SERVER_DIR) stays shared.
+DATA_DIR = os.environ.get("DOTRUSH_DATA_DIR") or os.path.normpath(os.path.join(SERVER_DIR, ".."))
+WORKSPACE = os.path.abspath(os.environ.get("DOTRUSH_WORKSPACE") or os.getcwd())
+WS_KEY = hashlib.sha1(WORKSPACE.encode("utf-8")).hexdigest()[:12]
+WS_DIR = os.path.join(DATA_DIR, "ws", WS_KEY)
+
+FIFO_PATH = os.environ.get("DOTRUSH_INJECT_FIFO") or os.path.join(WS_DIR, "inject.fifo")
+LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(WS_DIR, "proxy.log"))
 # Persisted project/solution choice (the roslyn config section) — written by the
-# `dotrush-setup` skill, replayed here at startup so the target loads without a
+# `dotrush-pick-project` skill, replayed here at startup so the target loads without a
 # dotrush.config.json in the user's repo.
-TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(SERVER_DIR, "..", "target.json")
+TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(WS_DIR, "target.json")
 
 _log_lock = threading.Lock()
 _stdin_lock = threading.Lock()  # serializes writes into DotRush's stdin
@@ -210,6 +219,17 @@ def ensure_server():
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 
+def ensure_workspace_dir():
+    """Create this workspace's runtime dir and record the project path, so the
+    `dotrush-pick-project` skill can find the right FIFO/target for this session."""
+    try:
+        os.makedirs(WS_DIR, exist_ok=True)
+        with open(os.path.join(WS_DIR, "workspace.txt"), "w") as f:
+            f.write(WORKSPACE + "\n")
+    except OSError as e:
+        log(f"cannot init workspace dir {WS_DIR}: {e}")
+
+
 def startup_config_inject(child_stdin):
     """Replay the persisted target as workspace/didChangeConfiguration, first thing.
 
@@ -241,6 +261,7 @@ def startup_config_inject(child_stdin):
 
 
 def main():
+    ensure_workspace_dir()
     real = ensure_server()
     if not real:
         sys.stderr.write(

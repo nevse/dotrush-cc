@@ -41,7 +41,7 @@ Or enable it declaratively in `.claude/settings.json`:
 ## Quick start after install
 
 1. Restart Claude Code; the C# LSP server loads on first use (auto-downloading the DotRush server once).
-2. Point DotRush at your project — ask Claude to **"set up the DotRush project"** (the `dotrush-setup`
+2. Point DotRush at your project — ask Claude to **"set up the DotRush project"** (the `dotrush-pick-project`
    skill). It finds your `.sln/.slnx/.csproj`, asks which to use, applies it live, and remembers the
    choice — no `dotrush.config.json` needed, nothing written into your repo.
 3. Verify via **`/plugin` → Installed → `dotrush`** (and the **Errors** tab). There is no `/lsp` command.
