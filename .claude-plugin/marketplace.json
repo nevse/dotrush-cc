@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "dotrush-cc",
+  "description": "DotRush C# LSP for Claude Code, with a custom-notification injection proxy",
+  "owner": {
+    "name": "Eugene Novikov"
+  },
+  "plugins": [
+    {
+      "name": "dotrush",
+      "source": "./plugins/dotrush",
+      "description": "DevExpress DotRush Roslyn language server wired into Claude Code's LSP tool, plus a stdio proxy that can inject custom LSP messages (diagnostics, live reconfigure/reload) into the running server. Auto-downloads the DotRush server on first use.",
+      "keywords": ["csharp", "dotnet", "lsp", "roslyn", "dotrush"],
+      "category": "language-support"
+    }
+  ]
+}

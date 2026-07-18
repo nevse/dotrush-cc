@@ -1,0 +1,12 @@
+# The DotRush server is downloaded at runtime into ${CLAUDE_PLUGIN_DATA}, never committed.
+# Guard against accidental local copies inside the repo:
+**/server/
+*.zip
+
+# Proxy runtime artifacts (only appear if someone points paths back into the repo)
+inject.fifo
+proxy.log
+
+# OS / editor
+.DS_Store
+*.swp
