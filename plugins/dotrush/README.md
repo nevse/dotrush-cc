@@ -26,21 +26,30 @@ DOTRUSH_RELEASE=2026.07 bash "$PLUGIN/scripts/install-dotrush.sh" "$DATA/server"
 Requires `curl` + `unzip`. Override the release with `DOTRUSH_RELEASE`, or point at an existing
 server binary with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp.json`).
 
-## Point DotRush at your project — `dotrush.config.json`
+## Point DotRush at your project
 
-DotRush loads projects only when the workspace root resolves to a single `.sln/.slnx`/`.csproj`.
-In a monorepo/multi-project root it finds many and **loads nothing** (idle server, every query returns
-"No symbols found"). Fix: create `dotrush.config.json` in your Claude working directory (DotRush reads it
-from cwd at startup):
+DotRush loads a project only when the workspace resolves to a single `.sln/.slnx/.csproj`. In a
+monorepo/multi-project root it finds many and **loads nothing** — every query returns "No symbols found".
 
+**Recommended — the `dotrush-setup` skill (interactive, no config file).** Ask Claude to *"set up the
+DotRush project"* (or invoke the `dotrush-setup` skill). It finds the `.sln/.slnx/.csproj` candidates in
+your workspace, **asks which one to use**, applies it live (no restart), and remembers the choice — stored
+in the plugin's data dir (`target.json`) and auto-replayed at startup on future sessions. **Nothing is
+written into your repo.** If you never picked one, it asks; once picked, it doesn't ask again.
+
+**Alternative — `dotrush.config.json`.** If you prefer a file, create it in your working directory:
 ```json
-{ "dotrush": { "roslyn": {
-  "projectOrSolutionFiles": ["/abs/path/to/YourSolution.sln"],
-  "restoreProjectsBeforeLoading": true
-} } }
+{ "dotrush": { "roslyn": { "projectOrSolutionFiles": ["/abs/path/to/YourSolution.sln"], "restoreProjectsBeforeLoading": true } } }
 ```
+Read at server **startup**; restart Claude Code after editing (or use live reload, below).
 
-Config is read at server **startup** → after editing it, restart Claude Code (or use live reload, below).
+## Verify it loaded
+
+There is **no `/lsp` command** in current Claude Code. To check:
+- Open **`/plugin` → Installed → `dotrush`** — it lists the `csharp` LSP server. The **Errors** tab shows
+  start-up failures (missing `python3`, download errors, etc.).
+- Or just use it: ask Claude to "find references to <symbol>" / "go to definition" in a `.cs` file. Real
+  results = it's working. "No symbols" = no project loaded → run `dotrush-setup`.
 
 ## Capabilities (via the Claude Code `LSP` tool)
 
@@ -100,7 +109,7 @@ Notes (learned while verifying this):
 
 ## Troubleshooting
 
-- **Every query returns "No symbols found"** → no project loaded. Add `dotrush.config.json` (above) and restart.
+- **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-setup`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
 - **Server didn't download** → check `curl`/`unzip` exist; run `install-dotrush.sh` manually; inspect `proxy.log`.
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.

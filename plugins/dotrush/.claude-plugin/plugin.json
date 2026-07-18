@@ -7,5 +7,6 @@
     "name": "Eugene Novikov"
   },
   "keywords": ["csharp", "dotnet", "lsp", "roslyn", "dotrush"],
-  "lspServers": "./.lsp.json"
+  "lspServers": "./.lsp.json",
+  "skills": ["./skills/"]
 }

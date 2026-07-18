@@ -40,13 +40,12 @@ Or enable it declaratively in `.claude/settings.json`:
 
 ## Quick start after install
 
-1. Point DotRush at your project — create `dotrush.config.json` in your Claude working directory:
-   ```json
-   { "dotrush": { "roslyn": { "projectOrSolutionFiles": ["/abs/path/to/YourSolution.sln"] } } }
-   ```
-   (Required in a multi-project/monorepo root, where auto-discovery can't pick a single target.)
-2. Restart Claude Code; the C# LSP loads on first use.
-3. See [`plugins/dotrush/README.md`](plugins/dotrush/README.md) for capabilities, the injection FIFO,
+1. Restart Claude Code; the C# LSP server loads on first use (auto-downloading the DotRush server once).
+2. Point DotRush at your project — ask Claude to **"set up the DotRush project"** (the `dotrush-setup`
+   skill). It finds your `.sln/.slnx/.csproj`, asks which to use, applies it live, and remembers the
+   choice — no `dotrush.config.json` needed, nothing written into your repo.
+3. Verify via **`/plugin` → Installed → `dotrush`** (and the **Errors** tab). There is no `/lsp` command.
+4. See [`plugins/dotrush/README.md`](plugins/dotrush/README.md) for capabilities, the injection FIFO,
    on-demand diagnostics, and **live reconfigure/reload without a restart**.
 
 ## What's in here

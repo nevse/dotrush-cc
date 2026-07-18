@@ -11,7 +11,8 @@
       "DOTRUSH_SERVER_DIR": "${CLAUDE_PLUGIN_DATA}/server",
       "DOTRUSH_INSTALL_SCRIPT": "${CLAUDE_PLUGIN_ROOT}/scripts/install-dotrush.sh",
       "DOTRUSH_INJECT_FIFO": "${CLAUDE_PLUGIN_DATA}/inject.fifo",
-      "DOTRUSH_PROXY_LOG": "${CLAUDE_PLUGIN_DATA}/proxy.log"
+      "DOTRUSH_PROXY_LOG": "${CLAUDE_PLUGIN_DATA}/proxy.log",
+      "DOTRUSH_TARGET_FILE": "${CLAUDE_PLUGIN_DATA}/target.json"
     },
     "initializationOptions": {},
     "settings": {},

@@ -34,6 +34,10 @@ REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, EXE)
 INSTALL_SCRIPT = os.environ.get("DOTRUSH_INSTALL_SCRIPT") or os.path.join(HERE, "..", "scripts", "install-dotrush.sh")
 FIFO_PATH = os.environ.get("DOTRUSH_INJECT_FIFO") or os.path.join(SERVER_DIR, "..", "inject.fifo")
 LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(SERVER_DIR, "..", "proxy.log"))
+# Persisted project/solution choice (the roslyn config section) — written by the
+# `dotrush-setup` skill, replayed here at startup so the target loads without a
+# dotrush.config.json in the user's repo.
+TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(SERVER_DIR, "..", "target.json")
 
 _log_lock = threading.Lock()
 _stdin_lock = threading.Lock()  # serializes writes into DotRush's stdin
@@ -206,6 +210,36 @@ def ensure_server():
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 
+def startup_config_inject(child_stdin):
+    """Replay the persisted target as workspace/didChangeConfiguration, first thing.
+
+    DotRush's initialize awaits configuration before loading projects, so pushing
+    this ahead of the client's messages makes the chosen solution load at startup —
+    no dotrush.config.json required. No-op if nothing has been chosen yet.
+    """
+    try:
+        if not os.path.exists(TARGET_FILE):
+            return
+        with open(TARGET_FILE) as f:
+            roslyn = json.load(f)
+        if not isinstance(roslyn, dict) or not roslyn.get("projectOrSolutionFiles"):
+            log(f"target file has no projectOrSolutionFiles: {TARGET_FILE}")
+            return
+    except (OSError, json.JSONDecodeError) as e:
+        log(f"target file unreadable ({TARGET_FILE}): {e}")
+        return
+    msg = {"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+           "params": {"settings": {"dotrush": {"roslyn": roslyn}}}}
+    body = json.dumps(msg).encode("utf-8")
+    with _stdin_lock:
+        try:
+            child_stdin.write(frame(body))
+            child_stdin.flush()
+            log(f"startup: applied persisted target {roslyn.get('projectOrSolutionFiles')}")
+        except (OSError, ValueError) as e:
+            log(f"startup config inject failed: {e}")
+
+
 def main():
     real = ensure_server()
     if not real:
@@ -221,6 +255,7 @@ def main():
         [real] + sys.argv[1:],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
     )
+    startup_config_inject(child.stdin)  # push the persisted target before the client's traffic
     for t in (
         threading.Thread(target=pump_client_to_server, args=(child.stdin,), daemon=True),
         threading.Thread(target=pump_stderr, args=(child.stderr,), daemon=True),
