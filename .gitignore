@@ -7,6 +7,9 @@
 inject.fifo
 proxy.log
 
+# Local per-machine environment (direnv account switcher; not for distribution)
+.envrc
+
 # OS / editor
 .DS_Store
 *.swp
