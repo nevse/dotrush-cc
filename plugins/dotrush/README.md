@@ -125,3 +125,19 @@ Notes (learned while verifying this):
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
+
+## Changelog
+
+### 0.2.0
+- **`dotrush-pick-project` skill** — interactively pick the C# project/solution DotRush loads (via
+  `AskUserQuestion`), applied live with no `dotrush.config.json`; asked only if not chosen before.
+- **Per-workspace runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/<hash>/`,
+  so concurrent Claude sessions on different projects no longer collide.
+- The proxy **replays the persisted project choice at startup** (`didChangeConfiguration`), so the chosen
+  solution auto-loads each session — no config file in your repo.
+- Docs: verify via `/plugin` (current Claude Code has **no `/lsp` command**); added a multiple-sessions section.
+
+### 0.1.0
+- Initial release. DotRush C# LSP wired into Claude Code via a stdio **proxy**; **auto-downloads** the
+  DotRush server (official GitHub release) for your OS/arch on first use; custom LSP-message **injection**
+  (FIFO) with on-demand diagnostics and live reconfigure/reload.
