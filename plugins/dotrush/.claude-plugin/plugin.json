@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "dotrush",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DotRush C# LSP for Claude Code + custom-notification injection proxy. Auto-installs the DotRush Roslyn server (official release) on first use.",
   "author": {
     "name": "Eugene Novikov"
