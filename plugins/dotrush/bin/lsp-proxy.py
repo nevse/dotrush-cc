@@ -18,10 +18,12 @@ Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_INSTALL_SCRIPT  installer to run if the server is missing
     DOTRUSH_INJECT_FIFO     control FIFO path
     DOTRUSH_PROXY_LOG       log file path (empty string disables logging)
+    DOTRUSH_SESSION_ID      explicit per-session key (overrides AGTERM_SESSION_ID discovery)
 """
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -33,13 +35,22 @@ EXE = "DotRush.exe" if os.name == "nt" else "DotRush"
 SERVER_DIR = os.environ.get("DOTRUSH_SERVER_DIR") or os.path.join(HERE, "..", "server")
 REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, EXE)
 INSTALL_SCRIPT = os.environ.get("DOTRUSH_INSTALL_SCRIPT") or os.path.join(HERE, "..", "scripts", "install-dotrush.sh")
-# Runtime files are scoped PER WORKSPACE so concurrent Claude sessions on different
-# projects don't share one FIFO / target / log. Key = the project dir (${CLAUDE_PROJECT_DIR},
-# else cwd). The DotRush server binary (SERVER_DIR) stays shared.
+# Runtime files are scoped PER CLAUDE SESSION so concurrent sessions never share one
+# FIFO / target / log. Parallel sessions launched from the SAME folder (e.g. one per git
+# worktree) share CLAUDE_PROJECT_DIR *and* cwd, so keying on the workspace path collides and
+# their loaded projects get meshed. AGTERM_SESSION_ID is unique per Claude session, so key on
+# it when present; fall back to the workspace-path hash (headless/CI/other terminals with no
+# session id — the old per-workspace behavior, incl. project choice persisting across restarts).
+# The DotRush server binary (SERVER_DIR) stays shared.
 DATA_DIR = os.environ.get("DOTRUSH_DATA_DIR") or os.path.normpath(os.path.join(SERVER_DIR, ".."))
+WS_ROOT = os.path.join(DATA_DIR, "ws")
 WORKSPACE = os.path.abspath(os.environ.get("DOTRUSH_WORKSPACE") or os.getcwd())
-WS_KEY = hashlib.sha1(WORKSPACE.encode("utf-8")).hexdigest()[:12]
-WS_DIR = os.path.join(DATA_DIR, "ws", WS_KEY)
+SESSION_ID = os.environ.get("DOTRUSH_SESSION_ID") or os.environ.get("AGTERM_SESSION_ID") or ""
+if SESSION_ID:
+    WS_KEY = "sess-" + hashlib.sha1(SESSION_ID.encode("utf-8")).hexdigest()[:12]
+else:  # no session id: keep the legacy workspace-hash key so persisted choices survive upgrade
+    WS_KEY = hashlib.sha1(WORKSPACE.encode("utf-8")).hexdigest()[:12]
+WS_DIR = os.path.join(WS_ROOT, WS_KEY)
 
 FIFO_PATH = os.environ.get("DOTRUSH_INJECT_FIFO") or os.path.join(WS_DIR, "inject.fifo")
 LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(WS_DIR, "proxy.log"))
@@ -219,13 +230,61 @@ def ensure_server():
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # e.g. EPERM: process exists but owned by someone else
+    return True
+
+
+def prune_stale_sessions():
+    """Remove session-scoped runtime dirs (`sess-*`) whose owning proxy is gone.
+
+    Session keys are per Claude session, so these dirs would otherwise accumulate
+    forever. We only delete a dir when its recorded `pid` names a dead process, so a
+    live session's FIFO/target is never touched (a missing/unreadable pid = keep).
+    Legacy workspace-hash dirs (no `sess-` prefix) are bounded and left alone."""
+    try:
+        entries = os.listdir(WS_ROOT)
+    except OSError:
+        return
+    for name in entries:
+        if not name.startswith("sess-"):
+            continue
+        d = os.path.join(WS_ROOT, name)
+        if os.path.abspath(d) == os.path.abspath(WS_DIR):
+            continue
+        pid_file = os.path.join(d, "pid")
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+        except (OSError, ValueError):
+            continue  # unknown owner -> keep, don't risk deleting a live session
+        if _pid_alive(pid):
+            continue
+        try:
+            shutil.rmtree(d)
+            log(f"pruned stale session dir {name} (pid {pid} gone)")
+        except OSError as e:
+            log(f"could not prune {name}: {e}")
+
+
 def ensure_workspace_dir():
-    """Create this workspace's runtime dir and record the project path, so the
-    `dotrush-pick-project` skill can find the right FIFO/target for this session."""
+    """Create this session's runtime dir and record the project path + session id + pid, so
+    the `dotrush-pick-project` skill can find the right FIFO/target for this session, and
+    stale dirs can be pruned once the owning proxy exits."""
     try:
         os.makedirs(WS_DIR, exist_ok=True)
         with open(os.path.join(WS_DIR, "workspace.txt"), "w") as f:
             f.write(WORKSPACE + "\n")
+        with open(os.path.join(WS_DIR, "pid"), "w") as f:
+            f.write(str(os.getpid()) + "\n")
+        if SESSION_ID:
+            with open(os.path.join(WS_DIR, "session.txt"), "w") as f:
+                f.write(SESSION_ID + "\n")
     except OSError as e:
         log(f"cannot init workspace dir {WS_DIR}: {e}")
 
@@ -262,6 +321,7 @@ def startup_config_inject(child_stdin):
 
 def main():
     ensure_workspace_dir()
+    prune_stale_sessions()
     real = ensure_server()
     if not real:
         sys.stderr.write(

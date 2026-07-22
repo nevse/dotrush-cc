@@ -33,9 +33,10 @@ monorepo/multi-project root it finds many and **loads nothing** — every query 
 
 **Recommended — the `dotrush-pick-project` skill (interactive, no config file).** Ask Claude to *"set up the
 DotRush project"* (or invoke the `dotrush-pick-project` skill). It finds the `.sln/.slnx/.csproj` candidates in
-your workspace, **asks which one to use**, applies it live (no restart), and remembers the choice — stored
-in the plugin's data dir (`target.json`) and auto-replayed at startup on future sessions. **Nothing is
-written into your repo.** If you never picked one, it asks; once picked, it doesn't ask again.
+your workspace, **asks which one to use**, applies it live (no restart), and remembers the choice for this
+session — stored in the plugin's data dir (`target.json`) and replayed on the session's LSP restarts.
+**Nothing is written into your repo.** It asks once per session; a fresh Claude session picks again (see
+[Multiple sessions / projects / worktrees](#multiple-sessions--projects--worktrees)).
 
 **Alternative — `dotrush.config.json`.** If you prefer a file, create it in your working directory:
 ```json
@@ -51,13 +52,19 @@ There is **no `/lsp` command** in current Claude Code. To check:
 - Or just use it: ask Claude to "find references to <symbol>" / "go to definition" in a `.cs` file. Real
   results = it's working. "No symbols" = no project loaded → run `dotrush-pick-project`.
 
-## Multiple sessions / projects
+## Multiple sessions / projects / worktrees
 
 Each Claude Code session spawns its own DotRush server, and all runtime state (chosen project, FIFO, log)
-is scoped **per workspace** under `${CLAUDE_PLUGIN_DATA}/ws/<hash-of-project-dir>/`. So you can run several
-sessions on **different** projects at once — each keeps its own project choice and injection FIFO, no
-collision. Two sessions on the **same** project dir share that workspace's FIFO (LSP navigation still works
-per session; only live injection is ambiguous there).
+is scoped **per session** under `${CLAUDE_PLUGIN_DATA}/ws/sess-<hash-of-session-id>/`. So every session —
+even several launched from the **same** folder, e.g. one per git worktree — gets its own project choice and
+injection FIFO, and they never collide or mesh. Dirs from ended sessions are pruned automatically on the
+next server start.
+
+The session id comes from `AGTERM_SESSION_ID` (unique per Claude session). On terminals that don't set one
+(headless/CI), the plugin falls back to per-**workspace** scoping keyed on the project-dir hash — the older
+behavior, where the project choice also persists across restarts. Per-session scoping trades that
+cross-restart persistence for isolation: a fresh session re-picks its project (parallel worktree sessions
+otherwise share `CLAUDE_PROJECT_DIR` and clobber one shared choice).
 
 ## Capabilities (via the Claude Code `LSP` tool)
 
@@ -73,12 +80,16 @@ build registers no call-hierarchy handler. Use `findReferences` instead.
 The proxy forwards Claude ⇄ DotRush verbatim and injects newline-delimited JSON-RPC written to a FIFO,
 at frame boundaries under a lock — so injection never desyncs request/response pairing.
 
-The FIFO + log live in a **per-workspace** dir (`${CLAUDE_PLUGIN_DATA}/ws/<hash>/`) so concurrent sessions
-on different projects don't collide. Find the ones for the *current* workspace by matching the recorded
-project path:
+The FIFO + log live in a **per-session** dir (`${CLAUDE_PLUGIN_DATA}/ws/sess-<hash>/`) so concurrent
+sessions never collide. Find the ones for the *current* session by matching the recorded session id
+(falling back to the workspace path when no session id is set):
 ```bash
 ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
-WSDIR=$(dirname "$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)")
+SID="${DOTRUSH_SESSION_ID:-$AGTERM_SESSION_ID}"
+HIT=""
+[ -n "$SID" ] && HIT=$(grep -lFx "$SID" "$ROOT"/*/ws/sess-*/session.txt 2>/dev/null | head -1)
+[ -z "$HIT" ] && HIT=$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)
+WSDIR=$(dirname "$HIT")
 FIFO="$WSDIR/inject.fifo"     # inject here
 LOG="$WSDIR/proxy.log"        # INJECT events + server->client traffic
 ```
@@ -127,6 +138,17 @@ Notes (learned while verifying this):
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
 
 ## Changelog
+
+### 0.3.0
+- **Per-session runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/sess-<session-id>/`
+  (keyed on `AGTERM_SESSION_ID`) instead of per project dir. Fixes projects **meshing** across parallel
+  sessions launched from one folder — the git-worktree workflow, where every session shares
+  `CLAUDE_PROJECT_DIR` and formerly clobbered one shared choice/FIFO.
+- Stale session dirs are **pruned** automatically on server start (dir whose recorded proxy `pid` is gone).
+- Falls back to the old per-workspace scoping (keyed on project-dir hash, choice persists across restarts)
+  when no session id is present (headless/CI). Trade-off: with a session id, a fresh session re-picks its
+  project.
+- `dotrush-pick-project` skill locates its dir by session id; docs updated.
 
 ### 0.2.0
 - **`dotrush-pick-project` skill** — interactively pick the C# project/solution DotRush loads (via

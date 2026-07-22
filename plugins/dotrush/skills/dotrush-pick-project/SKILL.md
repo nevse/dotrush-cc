@@ -3,11 +3,12 @@ name: dotrush-pick-project
 description: Pick which C# project/solution (.sln/.slnx/.csproj) DotRush should load for LSP in THIS workspace, and apply it live — no dotrush.config.json needed. Use when the user wants to set or change the DotRush project, or when C# LSP returns "No symbols found" because no project is loaded.
 ---
 
-# Pick the DotRush project (per workspace)
+# Pick the DotRush project (per session)
 
-Choose the C# project/solution DotRush loads for the current workspace, and apply it **without** a
-hand-written `dotrush.config.json`. The choice is persisted per workspace and replayed at startup, so
-it's asked only once — and each project/session keeps its own choice.
+Choose the C# project/solution DotRush loads for the current session, and apply it **without** a
+hand-written `dotrush.config.json`. The choice is scoped **per Claude session** (so parallel sessions —
+e.g. one per git worktree under the same folder — never clobber each other) and replayed on the session's
+LSP restarts, so within a session it's asked only once.
 
 ## When to run
 - The user asks to set / pick / change the DotRush (C#) project or solution.
@@ -15,14 +16,19 @@ it's asked only once — and each project/session keeps its own choice.
 
 ## Steps
 
-1. **Find this workspace's DotRush runtime dir** (the proxy records the project path in `workspace.txt`;
-   each workspace has its own dir, so concurrent sessions don't collide):
+1. **Find this session's DotRush runtime dir.** The proxy records the session id in `session.txt` and the
+   project path in `workspace.txt`. Match on the **session id** first — parallel sessions in different
+   worktrees share `$PWD`, so a `$PWD` match alone can hit the wrong session's FIFO:
    ```bash
    ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
-   HIT=$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)
+   SID="${DOTRUSH_SESSION_ID:-$AGTERM_SESSION_ID}"
+   HIT=""
+   [ -n "$SID" ] && HIT=$(grep -lFx "$SID" "$ROOT"/*/ws/sess-*/session.txt 2>/dev/null | head -1)
+   # Fallback (headless / no session id): match the recorded workspace path.
+   [ -z "$HIT" ] && HIT=$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)
    WSDIR=$(dirname "$HIT" 2>/dev/null)
    ```
-   - If `$HIT` is empty, the C# LSP server hasn't started for this workspace yet. Ask the user to trigger
+   - If `$HIT` is empty, the C# LSP server hasn't started for this session yet. Ask the user to trigger
      it (open any `.cs` file, or run any C# LSP action) and re-run this skill.
    - `FIFO="$WSDIR/inject.fifo"`; persisted choice = `"$WSDIR/target.json"`.
 
@@ -53,8 +59,11 @@ it's asked only once — and each project/session keeps its own choice.
 
 ## Notes
 - Always use **absolute** paths.
-- The choice is stored **per workspace** in the plugin data dir (`ws/<hash>/target.json`) and auto-loaded
-  on future sessions. Nothing is written into the user's repo (no `dotrush.config.json`).
-- Two Claude sessions on **different** projects each get their own project + FIFO (no collision). Running
-  two sessions on the **same** project dir shares one FIFO — LSP navigation still works per session, but
-  live injection into that shared workspace is ambiguous; prefer one session per project dir for injection.
+- The choice is stored **per Claude session** in the plugin data dir (`ws/sess-<hash>/target.json`) and
+  replayed on that session's LSP restarts. Nothing is written into the user's repo (no `dotrush.config.json`).
+- **Every session gets its own dir + FIFO + target**, keyed by session id — so parallel sessions (e.g. one
+  per git worktree under the same folder) never collide or mesh, and each can target a different solution.
+- Session ids are per session, so a **fresh** session (new Claude launch) re-asks — the previous session's
+  choice isn't inherited. Stale dirs from ended sessions are pruned automatically by the proxy.
+- On terminals with no session id (headless/CI), it falls back to per-workspace scoping keyed on the
+  project path, which *does* persist across restarts.
