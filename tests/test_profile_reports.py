@@ -314,6 +314,80 @@ class SpeedscopeTests(unittest.TestCase):
         self.assertIn("UnmanagedOrBlockedTime\t10.00", completed.stdout)
         self.assertIn("(no managed samples)", completed.stdout)
 
+    def test_separates_wall_clock_from_the_thread_summed_total(self):
+        # Two threads covering the same 10ms window: the spans sum to 20 but only 10ms elapsed.
+        # Reporting the sum as "ProfileDuration" read as elapsed time and inflated with thread
+        # count, so a 30s capture of a 20-thread service claimed ten minutes.
+        def thread(name):
+            return {
+                "type": "evented", "name": name, "unit": "milliseconds",
+                "startValue": 0, "endValue": 10,
+                "events": [
+                    {"type": "O", "frame": 0, "at": 0},
+                    {"type": "O", "frame": 1, "at": 0},
+                    {"type": "C", "frame": 1, "at": 10},
+                    {"type": "C", "frame": 0, "at": 10},
+                ],
+            }
+
+        document = {
+            "shared": {"frames": [{"name": "Process64 T (1)"}, {"name": "App!Work()"}]},
+            "profiles": [thread("Thread (1)"), thread("Thread (2)")],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "two.speedscope.json"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SUMMARIZE), str(source)],
+                check=True, capture_output=True, text=True,
+            ).stdout
+
+        self.assertIn("Threads\t2", result)
+        self.assertIn("WallClockDuration\t10.00", result)
+        self.assertIn("SampledThreadTime\t20.00", result)
+        self.assertNotIn("ProfileDuration", result)
+
+    def test_trims_il_parameter_lists_but_keeps_them_to_break_ties(self):
+        # Full IL signatures run past 400 characters and bury the method name. Two overloads
+        # that would print identically must keep their signatures rather than read as one row.
+        overload_a = "Lib!Type.Send(class System.String,int32,value class System.TimeSpan)"
+        overload_b = "Lib!Type.Send(class System.Object)"
+        document = {
+            "shared": {
+                "frames": [
+                    {"name": "Process64 T (1)"},
+                    {"name": "App!Only(class System.String,int32,bool,class System.Uri)"},
+                    {"name": overload_a},
+                    {"name": overload_b},
+                ]
+            },
+            "profiles": [{
+                "type": "evented", "name": "Thread (1)", "unit": "milliseconds",
+                "startValue": 0, "endValue": 30,
+                "events": [
+                    {"type": "O", "frame": 0, "at": 0},
+                    {"type": "O", "frame": 1, "at": 0}, {"type": "C", "frame": 1, "at": 10},
+                    {"type": "O", "frame": 2, "at": 10}, {"type": "C", "frame": 2, "at": 20},
+                    {"type": "O", "frame": 3, "at": 20}, {"type": "C", "frame": 3, "at": 30},
+                    {"type": "C", "frame": 0, "at": 30},
+                ],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "names.speedscope.json"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SUMMARIZE), str(source)],
+                check=True, capture_output=True, text=True,
+            ).stdout
+
+        # Unambiguous name loses its parameter list.
+        self.assertIn("App!Only(...)", result)
+        self.assertNotIn("class System.Uri", result)
+        # The two overloads would collide, so both keep their full signatures.
+        self.assertIn(overload_a, result)
+        self.assertIn(overload_b, result)
+
     def test_still_fails_when_the_document_has_no_profiles(self):
         document = {"shared": {"frames": []}, "profiles": []}
         with tempfile.TemporaryDirectory() as directory:

@@ -12,6 +12,21 @@ from pathlib import Path
 
 STRUCTURAL_NAMES = {"(Non-Activities)", "Threads"}
 PROCESS_ROOT = re.compile(r"^Process(?:\d+)?\s")
+# Speedscope frame names carry full IL signatures, which routinely run past 400 characters and
+# bury the method name. Trimmed for display only — aggregation always keys on the full name, and
+# a trimmed name that would collide with another row keeps its signature.
+IL_SIGNATURE = re.compile(r"\(.+\)$", re.DOTALL)
+
+
+def shorten(name: str) -> str:
+    """Drop an IL parameter list. An empty `()` is already short, so it is left alone."""
+    return IL_SIGNATURE.sub("(...)", name)
+
+
+def display_names(names: list[str]) -> dict[str, str]:
+    """Map each full frame name to the shortest form that stays unambiguous among `names`."""
+    counts = collections.Counter(shorten(name) for name in names)
+    return {name: (shorten(name) if counts[shorten(name)] == 1 else name) for name in names}
 
 
 def is_structural(name: str) -> bool:
@@ -107,10 +122,11 @@ def print_ranking(title: str, values: collections.Counter[str], total: float, li
         # failure: the header block above still reports the unmanaged-or-blocked interval.
         print("(no managed samples)")
         return
+    shown = display_names([name for name, _ in ranked[:limit]])
     for name, value in ranked[:limit]:
         percent = value * 100 / total if total else 0.0
         percent_text = "<0.01%" if 0 < percent < 0.01 else f"{percent:.2f}%"
-        print(f"{percent_text}\t{value:.2f}\t{name}")
+        print(f"{percent_text}\t{value:.2f}\t{shown[name]}")
 
 
 def main() -> int:
@@ -127,6 +143,9 @@ def main() -> int:
     inclusive: collections.Counter[str] = collections.Counter()
     managed = unmanaged = duration = 0.0
     units = set()
+    starts: list[float] = []
+    ends: list[float] = []
+    threads = 0
 
     for profile in document.get("profiles", []):
         profile_managed, profile_unmanaged, profile_duration = summarize_profile(
@@ -136,6 +155,9 @@ def main() -> int:
         unmanaged += profile_unmanaged
         duration += profile_duration
         units.add(profile.get("unit", "unknown"))
+        starts.append(float(profile.get("startValue", 0)))
+        ends.append(float(profile.get("endValue", 0)))
+        threads += 1
 
     if not units:
         raise ValueError(f"no profiles found in {args.speedscope}")
@@ -143,7 +165,12 @@ def main() -> int:
     unit = units.pop() if len(units) == 1 else "mixed-units"
     print(f"Source\t{args.speedscope.resolve()}")
     print(f"Unit\t{unit}")
-    print(f"ProfileDuration\t{duration:.2f}")
+    # WallClockDuration is the capture window. Every other time here is summed across threads,
+    # so on a multi-threaded target they exceed it — SampledThreadTime by roughly the thread
+    # count. Reporting only the sum (as "ProfileDuration") read as elapsed time and was wrong.
+    print(f"Threads\t{threads}")
+    print(f"WallClockDuration\t{max(ends) - min(starts):.2f}")
+    print(f"SampledThreadTime\t{duration:.2f}")
     print(f"ManagedSampledTime\t{managed:.2f}")
     print(f"UnmanagedOrBlockedTime\t{unmanaged:.2f}")
     print()

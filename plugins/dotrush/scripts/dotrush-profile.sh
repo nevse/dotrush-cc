@@ -219,10 +219,12 @@ case "$command_name" in
 
     # Each artifact path is printed as soon as it exists: a later step failing must not discard
     # the pointer to a capture that already cost an attach.
-    "$trace_tool" collect --process-id "$pid" --duration "$duration" --output "$trace_file"
+    # The tools narrate to stdout; stdout here is the KEY=value contract the skills parse, so
+    # their chatter goes to stderr alongside our own progress messages.
+    "$trace_tool" collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
     echo "TRACE=$trace_file"
 
-    "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file"
+    "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file" >&2
     # ConvertToFormat swallows its own failure and still exits 0, so check the file itself.
     [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
     echo "SPEEDSCOPE=$speedscope_file"
@@ -246,7 +248,7 @@ case "$command_name" in
       trace_tool="$(resolve_tool dotnet-trace DOTRUSH_TRACE_TOOL)"
       speedscope_file="$(speedscope_report_path "$trace_file")"
       if [[ ! -f "$speedscope_file" ]]; then
-        "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file"
+        "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file" >&2
         [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
       fi
     fi
@@ -266,7 +268,7 @@ case "$command_name" in
 
     # Printed before the report step: that collection already forced a full gen-2 GC on the
     # target, so its path must survive a failure to summarize it.
-    "$gcdump_tool" collect --process-id "$pid" --output "$dump"
+    "$gcdump_tool" collect --process-id "$pid" --output "$dump" >&2
     echo "GCDUMP=$dump"
 
     report="$(create_heap_report "$dump")"
