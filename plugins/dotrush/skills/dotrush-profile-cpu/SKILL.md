@@ -29,7 +29,7 @@ Before the first lazy installation, tell the user that the helper will download 
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace <PID> 00:00:30 [OUTPUT_DIR]
    ```
 
-   Reproduce the slow operation during that interval when it is within scope. Start collection just before the workload and keep idle time outside the capture where practical. The helper writes `.nettrace`, `.speedscope.json`, and `.top30.txt` artifacts and prints their absolute paths. The text report contains both exclusive and inclusive managed-CPU rankings plus the unmanaged-or-blocked interval.
+   Reproduce the slow operation during that interval when it is within scope. Start collection just before the workload and keep idle time outside the capture where practical. The helper writes `.nettrace`, `.speedscope.json`, and `.top30.txt` artifacts and prints their absolute paths. The text report opens with `Threads`, `WallClockDuration` (the capture window) and the thread-summed `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime`, then gives exclusive and inclusive managed-CPU rankings.
 
 4. Read the text report. If a different list size is useful, run:
 
@@ -38,6 +38,14 @@ Before the first lazy installation, tell the user that the helper will download 
    ```
 
 5. Report the PID, command/workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
+
+   **Expect inlining, and say so rather than reporting the caller as the hot method.** Step 2 asks for a Release build, and the JIT inlines small methods into their callers there, so their frames do not exist in the trace at all — their time is attributed to the caller. The signature is a method with high *exclusive* time and few or no callees beneath it, often something as coarse as `Program.Main()` or a request handler. Reporting "`Main` is hot" is true and useless. When you see it:
+
+   - Say in the report that the hot frame is an inlining root and name the callees it likely absorbed, read from the source rather than the trace.
+   - To get the real attribution, re-run the target with `DOTNET_TieredCompilation=0` and `DOTNET_JitNoInline=1` set in its environment, and say that this itself changes performance — it is a diagnostic run for attribution, not a measurement of production behaviour.
+   - Never conclude that a large method needs optimizing just because it absorbed its callees' samples.
+
+   `WallClockDuration` is the capture window. `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime` are summed across the `Threads` count, so on a multi-threaded target they exceed the wall clock and must not be reported as elapsed time. Percentages are shares of `ManagedSampledTime`. Method names print without their IL parameter lists unless two rows would otherwise read identically.
 
 ## Boundaries
 
