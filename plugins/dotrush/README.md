@@ -12,6 +12,12 @@ Wires the [DotRush](https://github.com/JaneySprings/DotRush) Roslyn language ser
 | `.lsp.json` | maps `.cs/.csx/.cshtml` → `bin/lsp-proxy.py`; wires portable `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` paths + a 180 s startup timeout (first-run download) |
 | `bin/lsp-proxy.py` | stdio man-in-the-middle: verbatim forwarding + custom-message injection + auto-install-on-first-run (stdlib-only Python 3) |
 | `scripts/install-dotrush.sh` | downloads the DotRush server bundle for this OS/arch into `${CLAUDE_PLUGIN_DATA}/server` |
+| `scripts/dotrush-profile.sh` | lazily installs the `dotnet-trace`/`dotnet-gcdump` NuGet tools (from the tool dir, not your repo), then collects and reports bounded CPU traces or GC dumps |
+| `scripts/summarize-speedscope.py` | derives full-name exclusive/inclusive managed-CPU rankings from Speedscope output |
+| `scripts/compare-heapstats.py` | ranks per-type object-count deltas between two `dotnet-gcdump report` tables (backs `heap-diff`); reports no per-type bytes, because gcdump prints only one sampled size per type |
+| `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
+| `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
+| `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots and compares heap-stat reports for managed-memory growth |
 
 ## The server auto-installs
 
@@ -74,6 +80,37 @@ loaded (target a solution, not a single `.csproj`).
 
 Not supported: **call hierarchy** (`prepareCallHierarchy`/`incomingCalls`/`outgoingCalls`) — this DotRush
 build registers no call-hierarchy handler. Use `findReferences` instead.
+
+## Profiling .NET applications
+
+The plugin mirrors DotRush's profiling split with two Claude skills:
+
+- Ask Claude to **profile CPU**, find a hot path, investigate high CPU/latency, or invoke
+  `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval and creates a `.nettrace`, a
+  `.speedscope.json`, and a text top-method report.
+- Ask Claude to **profile managed memory**, investigate a suspected leak, compare heap snapshots, or invoke
+  `dotrush-profile-memory`. It collects `.gcdump` files, produces heap-stat reports, and can rank per-type
+  object-count deltas between a baseline and a later snapshot. Per-type *byte* deltas are deliberately not
+  reported: `dotnet-gcdump report` prints one sampled object size per type, never a total, so a computed
+  byte delta can move opposite to reality. The heap-wide `HeapBytes` delta is sound and is reported.
+
+Both skills use `scripts/dotrush-profile.sh`. It uses globally available `dotnet-trace`/`dotnet-gcdump`
+commands when present; otherwise it lazily installs them as NuGet tools under `${CLAUDE_PLUGIN_DATA}`. That
+install runs from the tool directory rather than your repository, so a repo-local `NuGet.Config` cannot
+redirect which package is fetched; your own NuGet configuration still applies.
+Artifacts never default into your repository: without an explicit output directory they go to
+`$DOTRUSH_PROFILE_OUTPUT_DIR`, else `${CLAUDE_PLUGIN_DATA}/profiles`, else
+`${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles`. Claude or the user can always supply one instead.
+
+Trace durations must be given as `hh:mm:ss` (or `dd:hh:mm:ss`), with `hh` 00-23 and `mm`/`ss` 00-59.
+Both bounds exist because `dotnet-trace` binds `--duration` with `TimeSpan.Parse`, which reinterprets
+any field that runs past its range rather than rejecting it: `00:30` is `hh:mm` (30 minutes, not 30
+seconds) and `24:00:00` is `dd:hh:mm` (24 days, not one). For a day or more, use the day field —
+`01:00:00:00`.
+
+`dotnet-gcdump` triggers a full generation 2 GC and can pause the target, so the memory skill requires an
+explicit impact check before attaching to production or another latency-sensitive process. Neither skill
+uploads profiling artifacts to external viewers.
 
 ## Injecting custom LSP messages (the proxy)
 
@@ -138,6 +175,15 @@ Notes (learned while verifying this):
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
 
 ## Changelog
+
+### 0.4.0
+- Added `dotrush-profile-cpu` for bounded `dotnet-trace` capture, Speedscope conversion, and top-method reports.
+- Added `dotrush-profile-memory` for `dotnet-gcdump` capture, heap statistics, and baseline/current comparison.
+- Added a shared lazy-installing profiler helper; profiling tools and artifacts stay outside your repository
+  (`$DOTRUSH_PROFILE_OUTPUT_DIR` → `${CLAUDE_PLUGIN_DATA}/profiles` → the user cache).
+- Added `scripts/compare-heapstats.py` behind `heap-diff`, and `tests/test_profile_reports.py` covering both
+  report tools. `heap-diff` ranks per-type **object counts**; it reports no per-type byte delta, because
+  `dotnet-gcdump report` prints one sampled object size per type rather than a total.
 
 ### 0.3.0
 - **Per-session runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/sess-<session-id>/`

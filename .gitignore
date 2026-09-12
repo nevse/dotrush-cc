@@ -10,6 +10,13 @@ proxy.log
 # Local per-machine environment (direnv account switcher; not for distribution)
 .envrc
 
+# Python bytecode from running the test suite
+__pycache__/
+*.pyc
+
+# Profiling artifacts, if someone points --output back into the repo
+dotrush-profiles/
+
 # OS / editor
 .DS_Store
 *.swp
