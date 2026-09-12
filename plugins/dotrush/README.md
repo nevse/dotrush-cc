@@ -184,6 +184,14 @@ Notes (learned while verifying this):
 - Added `scripts/compare-heapstats.py` behind `heap-diff`, and `tests/test_profile_reports.py` covering both
   report tools. `heap-diff` ranks per-type **object counts**; it reports no per-type byte delta, because
   `dotnet-gcdump report` prints one sampled object size per type rather than a total.
+- The CPU report heads with `Threads`, `WallClockDuration` (the capture window) and `SampledThreadTime`,
+  `ManagedSampledTime` and `UnmanagedOrBlockedTime` (each summed across threads). Method names print
+  without their IL parameter lists unless two rows would otherwise read identically.
+- Trace durations are validated as `hh:mm:ss` or `dd:hh:mm:ss` with `hh` 00-23, `mm`/`ss` 00-59, and must be
+  greater than zero. `dotnet-trace` parses `--duration` with `TimeSpan.Parse`, which reads `00:30` as 30
+  minutes and `24:00:00` as 24 days, and treats a zero duration as no limit at all.
+- The `trace` and `heap` commands print only `TRACE=`/`SPEEDSCOPE=`/`REPORT=`/`GCDUMP=` lines on stdout; the
+  diagnostic tools' own output goes to stderr.
 
 ### 0.3.0
 - **Per-session runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/sess-<session-id>/`
