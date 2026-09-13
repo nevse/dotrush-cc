@@ -9,7 +9,7 @@
     {
       "name": "dotrush",
       "source": "./plugins/dotrush",
-      "description": "DevExpress DotRush Roslyn language server wired into Claude Code's LSP tool, with live injection plus .NET CPU and managed-memory profiling skills. Auto-downloads required tools on first use.",
+      "description": "DotRush Roslyn language server wired into Claude Code's LSP tool, with live injection plus .NET CPU and managed-memory profiling skills. Auto-downloads required tools on first use.",
       "keywords": ["csharp", "dotnet", "lsp", "roslyn", "dotrush", "profiling", "dotnet-trace", "dotnet-gcdump"],
       "category": "language-support"
     }

@@ -4,8 +4,9 @@ A Claude Code **marketplace** containing the `dotrush` plugin: the [DotRush](htt
 Roslyn language server wired into Claude Code's `LSP` tool for C#/.NET, plus a stdio **proxy** that can
 inject custom LSP messages into the running server, and skills for CPU and managed-memory profiling.
 
-The DotRush server is **not** committed here (it's ~118 MB and platform-specific). Instead the plugin
-**auto-downloads the official release bundle** for your OS/arch on first use.
+The DotRush server is **not** committed here. The DotRush version is pinned in
+[`dotrush-version.json`](plugins/dotrush/dotrush-version.json), and on first use the plugin **downloads that
+release's platform-neutral bundles** (or builds them from source when the pin is a commit).
 
 ## Install
 
@@ -49,6 +50,65 @@ Or enable it declaratively in `.claude/settings.json`:
 4. See [`plugins/dotrush/README.md`](plugins/dotrush/README.md) for capabilities, the injection FIFO,
    on-demand diagnostics, **live reconfigure/reload without a restart**, and .NET profiling.
 
+## Usage examples
+
+You talk to Claude in plain language; the plugin supplies the LSP server and the skills behind it.
+
+**Pick the project** (once per session, or when queries return "No symbols found"):
+
+> set up the DotRush project
+
+Claude lists the `.sln/.slnx/.csproj` files it finds, asks which one to load, and applies the choice without a restart.
+
+**Navigate and understand code** — answered by DotRush rather than by grepping text:
+
+> where is `OrderService.PlaceOrder` called from?
+>
+> find all implementations of `IPaymentGateway`
+>
+> what type does `CreateClient()` return in `Startup.cs`, and where is it defined?
+>
+> rename-safe check: list every reference to `LegacyMapper` before I delete it
+
+Behind these are `findReferences`, `goToImplementation`, `hover`, `goToDefinition`, `documentSymbol` and
+`workspaceSymbol`. Call hierarchy isn't available, so "who calls X" is answered from references.
+
+**Profile CPU** of a running app:
+
+> my API is at 100% CPU under load — profile it for 30 seconds while I hit `/orders`
+
+Claude finds the process (or asks which one), captures a `dotnet-trace`, and reports the hottest methods
+with their exclusive and inclusive time, pointing out where JIT inlining moved samples into a caller.
+
+**Chase a memory leak**:
+
+> memory keeps growing in `MyApp.Worker` — take a baseline heap snapshot, I'll run the import job, then take another and compare
+
+Claude takes two `dotnet-gcdump` snapshots, ranks the types by byte growth, and shows the retention
+chain that keeps each one alive (for example `[static var App.Cache.s_items] <- [.NET Roots]`). It
+asks first before attaching to a production or latency-sensitive process, because a gcdump forces a full GC.
+
+**Run the profiling helper yourself** — the same script the skills use:
+
+```bash
+P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   # installed plugin version
+"$P/scripts/dotrush-profile.sh" tools                # pin, and whether the tools are installed
+"$P/scripts/dotrush-profile.sh" ps trace             # attachable .NET processes
+"$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 # always hh:mm:ss — 00:30 would mean 30 minutes
+"$P/scripts/dotrush-profile.sh" heap 12345           # snapshot + per-type/retention report
+"$P/scripts/dotrush-profile.sh" heap-diff base.gcdump current.gcdump 30
+```
+
+**Analyze the whole solution on demand** by injecting a DotRush notification into the running server
+(finding `$FIFO` is described in the [plugin README](plugins/dotrush/README.md#injecting-custom-lsp-messages-the-proxy)):
+
+```bash
+echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$FIFO"
+```
+
+DotRush answers with a burst of `textDocument/publishDiagnostics`, one per file with findings; the proxy log
+records the notifications but not their contents.
+
 ## What's in here
 
 ```
@@ -67,6 +127,7 @@ dotrush-cc/
     ├── skills/dotrush-pick-project/      # picks the .sln/.slnx/.csproj DotRush loads, applied live
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
-    └── README.md                         # plugin usage
+    ├── README.md                         # plugin usage
+    └── CHANGELOG.md                      # release notes
 tests/test_profile_reports.py             # unit tests for the report tools, installer and proxy (python3 -m unittest)
 ```

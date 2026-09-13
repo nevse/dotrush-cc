@@ -1,0 +1,77 @@
+# Changelog
+
+### 0.5.2
+- DotRush is pinned to the 2026.09 release, republished with `DotRush.Bundle.LanguageServer.zip` and
+  `DotRush.Bundle.Diagnostics.zip`, so both components are downloaded instead of built. The installer looks for
+  those names; the release no longer ships per-platform server bundles.
+- The server bundle has no native launcher, so the proxy starts `DotRush.dll` through the `dotnet` host. A build
+  from source publishes the server the way DotRush's own `server` task does, without a runtime identifier or
+  `_dotrush.config.json`.
+
+### 0.5.1
+- The profiling skills now install their tools beside the language server. Claude Code passes
+  `CLAUDE_PLUGIN_DATA` to the server but not to the Bash commands a skill runs, so 0.5.0 put the tools in
+  `~/.cache/dotrush-cc` and `dotrush-profile.sh tools` reported the server as not installed. Without the
+  variable, the scripts now derive the plugin's data directory from where the plugin is installed.
+
+### 0.5.0
+- DotRush is pinned in `dotrush-version.json` to one `ref`, a release tag or a commit. The language server and the
+  profiling tools are installed from it the same way and from the same place: the release's server and diagnostics
+  bundles when the release ships both, otherwise both built from source at that ref. The pin is a commit after
+  2026.09; the server was pinned to 2026.07 before. Each install records its ref in `.dotrush-ref`, and the proxy
+  reinstalls a server at another ref, swapping it in whole and keeping the previous server if that fails. `.lsp.json`
+  now allows 15 minutes for a start that builds.
+- The profiling skills now run DotRush's own `dotnet-trace` and `dotnet-gcdump` instead of the NuGet tools. The NuGet
+  install, `DOTRUSH_TRACE_TOOL`, `DOTRUSH_GCDUMP_TOOL` and `DOTRUSH_RELEASE` are gone (use `DOTRUSH_REF`), and so are
+  the NuGet tools 0.4.0 left in `diagnostics-tools`. `DOTRUSH_DIAGNOSTICS_DIR` now names a ready directory of the
+  tools, and `tools` shows the pin and what is installed.
+- `heap` collects with `dotnet-gcdump --format Json` and prints `GCDUMP_JSON=` after `GCDUMP=`. The memory
+  reports read that heap graph instead of parsing `dotnet-gcdump report` text, so per-type bytes are exact
+  and `heap-report` lists the largest retained objects with the dominator chain that keeps each alive.
+  `heap-diff` ranks exact per-type byte deltas alongside count deltas. This needs a DotRush build whose
+  `dotnet-gcdump` has `--format Json`; without one the heap commands fail instead of falling back.
+- `scripts/analyze-gcdump.py` replaces `scripts/compare-heapstats.py` and streams the JSON, so a large heap's
+  per-object arrays are never loaded whole. `heap-report` now prints the report rather than a file path, and
+  0.4.0 `.heapstat.txt` files are refused; their `.gcdump` files still work and are converted on first use.
+
+### 0.4.0
+- Added `dotrush-profile-cpu` for bounded `dotnet-trace` capture, Speedscope conversion, and top-method reports.
+- Added `dotrush-profile-memory` for `dotnet-gcdump` capture, heap statistics, and baseline/current comparison.
+- Added a shared lazy-installing profiler helper; profiling tools and artifacts stay outside your repository
+  (`$DOTRUSH_PROFILE_OUTPUT_DIR` → `${CLAUDE_PLUGIN_DATA}/profiles` → the user cache).
+- Added `scripts/compare-heapstats.py` behind `heap-diff`, and `tests/test_profile_reports.py` covering both
+  report tools. `heap-diff` ranks per-type **object counts**; it reports no per-type byte delta, because
+  `dotnet-gcdump report` prints one sampled object size per type rather than a total.
+- The CPU report heads with `Threads`, `WallClockDuration` (the capture window) and `SampledThreadTime`,
+  `ManagedSampledTime` and `UnmanagedOrBlockedTime` (each summed across threads). Method names print
+  without their IL parameter lists unless two rows would otherwise read identically.
+- Trace durations are validated as `hh:mm:ss` or `dd:hh:mm:ss` with `hh` 00-23, `mm`/`ss` 00-59, and must be
+  greater than zero. `dotnet-trace` parses `--duration` with `TimeSpan.Parse`, which reads `00:30` as 30
+  minutes and `24:00:00` as 24 days, and treats a zero duration as no limit at all.
+- The `trace` and `heap` commands print only `TRACE=`/`SPEEDSCOPE=`/`REPORT=`/`GCDUMP=` lines on stdout; the
+  diagnostic tools' own output goes to stderr.
+
+### 0.3.0
+- **Per-session runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/sess-<session-id>/`
+  (keyed on `AGTERM_SESSION_ID`) instead of per project dir. Fixes projects **meshing** across parallel
+  sessions launched from one folder — the git-worktree workflow, where every session shares
+  `CLAUDE_PROJECT_DIR` and formerly clobbered one shared choice/FIFO.
+- Stale session dirs are **pruned** automatically on server start (dir whose recorded proxy `pid` is gone).
+- Falls back to the old per-workspace scoping (keyed on project-dir hash, choice persists across restarts)
+  when no session id is present (headless/CI). Trade-off: with a session id, a fresh session re-picks its
+  project.
+- `dotrush-pick-project` skill locates its dir by session id; docs updated.
+
+### 0.2.0
+- **`dotrush-pick-project` skill** — interactively pick the C# project/solution DotRush loads (via
+  `AskUserQuestion`), applied live with no `dotrush.config.json`; asked only if not chosen before.
+- **Per-workspace runtime state** — target/FIFO/log now live under `${CLAUDE_PLUGIN_DATA}/ws/<hash>/`,
+  so concurrent Claude sessions on different projects no longer collide.
+- The proxy **replays the persisted project choice at startup** (`didChangeConfiguration`), so the chosen
+  solution auto-loads each session — no config file in your repo.
+- Docs: verify via `/plugin` (current Claude Code has **no `/lsp` command**); added a multiple-sessions section.
+
+### 0.1.0
+- Initial release. DotRush C# LSP wired into Claude Code via a stdio **proxy**; **auto-downloads** the
+  DotRush server (official GitHub release) for your OS/arch on first use; custom LSP-message **injection**
+  (FIFO) with on-demand diagnostics and live reconfigure/reload.
