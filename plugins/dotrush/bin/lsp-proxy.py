@@ -139,8 +139,9 @@ class DiagnosticsStore:
     """Mirrors the diagnostics DotRush publishes to Claude Code into one JSON file.
 
     DotRush answers `dotrush/solutionDiagnostics` only with textDocument/publishDiagnostics
-    notifications, which go to the client, so the proxy keeps the latest list per URI (an empty
-    list clears it) plus a publish count and time. The `dotrush-diagnostics` skill injects a request,
+    notifications. Claude Code shows the model only the diagnostics it has not shown before, so the
+    proxy keeps the complete current set: the latest list per URI (an empty list clears it) plus a
+    publish count and time. The `dotrush-diagnostics` skill injects a request,
     then waits for the count to move and publishing to go quiet. Writes are coalesced so a burst
     across a large solution rewrites the file a few times, not once per document."""
 

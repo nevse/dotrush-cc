@@ -1,19 +1,24 @@
 # Changelog
 
+### 0.6.1
+- Corrected the 0.6.0 claim that Claude Code does not show the model diagnostics published outside an edit. Checked
+  in a live session: after a solution run it surfaced diagnostics for a file it had never opened, but only the ones
+  it had not shown before, hints included. The captured `diagnostics.json` stays the complete current set, and the
+  skill now says how the two relate.
+
 ### 0.6.0
 - Added `dotrush-diagnostics`, which runs DotRush's whole-solution compiler analysis in the session's server and
   reports counts by severity and code and each error and warning with its location (`scripts/dotrush-diagnostics.sh`,
   `scripts/summarize-diagnostics.py`).
 - The proxy mirrors every `textDocument/publishDiagnostics` into `diagnostics.json` in the session dir (latest list
-  per file, publish count and time). Claude Code does not show the model diagnostics published outside an edit,
-  and DotRush signals no end of analysis, so this file is how the results are read and when they are complete.
+  per file, publish count and time). DotRush signals no end of analysis, so this file is how the results are read
+  and when they are complete.
 - `dotrush-pick-project` no longer sends `dotrush/reloadWorkspace` to a server that has not completed its first
   load. DotRush's `initialize` waits for a configuration and starts its code-analysis worker only after that load;
   a reload sent with the configuration raced it, and the session then either published no diagnostics at all or
   loaded the project twice and reported each diagnostic twice. The proxy
   now creates `load-completed` in the session dir on `dotrush/loadCompleted`, and the skill reloads only when it
   exists.
-- The README no longer claims Claude Code surfaces solution diagnostics on its own.
 
 ### 0.5.2
 - DotRush is pinned to the 2026.09 release, republished with `DotRush.Bundle.LanguageServer.zip` and

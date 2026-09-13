@@ -32,6 +32,7 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 
 3. Read the output:
 
+   - Claude Code may also show a `new-diagnostics` block after the run. It lists only diagnostics it has not shown before (so files already reported are missing from it) and includes the hints. Report from this script's output, which is the complete current set.
    - If every diagnostic appears exactly twice, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
    - The first line counts files and diagnostics by severity. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
    - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` to the summarizer only when the user asks for them (see step 4).

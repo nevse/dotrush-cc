@@ -156,10 +156,11 @@ Ask Claude for **solution diagnostics** ("what compiler errors does the solution
 `dotrush-diagnostics`. It runs DotRush's whole-solution compiler analysis in the session's server and reports
 counts by severity, the most frequent codes, and the errors and warnings with their locations. Nothing is built.
 
-DotRush sends analysis results only as `textDocument/publishDiagnostics` notifications to the client, and
-Claude Code does not put diagnostics published outside an edit in front of the model. So the proxy mirrors every
-publish into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of the
-last one. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
+DotRush sends analysis results only as `textDocument/publishDiagnostics` notifications to the client. Claude Code
+does show the model newly published diagnostics, including for files it never opened, but only the ones it has not
+shown before, hints included, and with no sign of when the analysis finished. So the proxy mirrors every publish
+into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of the last one.
+That file is the complete current set the skill reports from. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
 count moves and publishing has been quiet for two seconds, because DotRush signals no completion.
 
 ```bash
@@ -209,7 +210,7 @@ client tolerates it.
 
 | Method | Params | Effect |
 |--------|--------|--------|
-| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics`, captured in `diagnostics.json` (see [Solution diagnostics](#solution-diagnostics)) |
+| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics`; Claude Code surfaces the ones it has not shown yet, and the proxy captures all of them in `diagnostics.json` (see [Solution diagnostics](#solution-diagnostics)) |
 | `dotrush/documentDiagnostics` | `DidOpenTextDocumentParams` | analyze a single document |
 | `dotrush/reloadWorkspace` | `{"workspaceFolders":[{"uri","name"}]}` | clear caches, re-run project load |
 | `workspace/didChangeConfiguration` | `{"settings":{"dotrush":{"roslyn":{…}}}}` | replace the roslyn config (see live reload) |
