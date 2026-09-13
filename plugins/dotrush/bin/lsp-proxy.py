@@ -15,7 +15,8 @@ Control channel (newline-delimited JSON, one JSON-RPC message per line):
 Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_REAL_BIN        explicit path to the DotRush executable (overrides discovery)
     DOTRUSH_SERVER_DIR      dir the server lives in / is installed to
-    DOTRUSH_INSTALL_SCRIPT  installer to run if the server is missing
+    DOTRUSH_INSTALL_SCRIPT  installer to run if the server is missing or not at the pinned ref
+    DOTRUSH_REF             DotRush ref to require (default: "ref" in dotrush-version.json)
     DOTRUSH_INJECT_FIFO     control FIFO path
     DOTRUSH_PROXY_LOG       log file path (empty string disables logging)
     DOTRUSH_SESSION_ID      explicit per-session key (overrides AGTERM_SESSION_ID discovery)
@@ -35,6 +36,8 @@ EXE = "DotRush.exe" if os.name == "nt" else "DotRush"
 SERVER_DIR = os.environ.get("DOTRUSH_SERVER_DIR") or os.path.join(HERE, "..", "server")
 REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, EXE)
 INSTALL_SCRIPT = os.environ.get("DOTRUSH_INSTALL_SCRIPT") or os.path.join(HERE, "..", "scripts", "install-dotrush.sh")
+PIN_FILE = os.path.join(HERE, "..", "dotrush-version.json")
+REF_MARKER = os.path.join(SERVER_DIR, ".dotrush-ref")
 # Runtime files are scoped PER CLAUDE SESSION so concurrent sessions never share one
 # FIFO / target / log. Parallel sessions launched from the SAME folder (e.g. one per git
 # worktree) share CLAUDE_PROJECT_DIR *and* cwd, so keying on the workspace path collides and
@@ -204,17 +207,45 @@ def injector(child_stdin):
             time.sleep(0.5)
 
 
+def pinned_ref():
+    """The DotRush ref this plugin version requires: DOTRUSH_REF, else the pin file."""
+    if os.environ.get("DOTRUSH_REF"):
+        return os.environ["DOTRUSH_REF"]
+    try:
+        with open(PIN_FILE, encoding="utf-8") as f:
+            return json.load(f)["ref"]
+    except (OSError, ValueError, KeyError) as e:
+        log(f"cannot read the pinned DotRush ref from {PIN_FILE}: {e}")
+        return None
+
+
+def installed_ref():
+    try:
+        with open(REF_MARKER, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
 def ensure_server():
-    """Return a path to the DotRush executable, auto-installing it if missing."""
-    if os.path.exists(REAL_BIN):
+    """Return a path to the DotRush executable, installing the pinned ref when it is missing or stale."""
+    if os.environ.get("DOTRUSH_REAL_BIN"):
+        return REAL_BIN if os.path.exists(REAL_BIN) else None
+    wanted = pinned_ref()
+    present = os.path.exists(REAL_BIN)
+    if present and (wanted is None or installed_ref() == wanted):
         return REAL_BIN
     if os.path.exists(INSTALL_SCRIPT):
-        log(f"DotRush server missing at {REAL_BIN}; running installer {INSTALL_SCRIPT}")
-        sys.stderr.write("dotrush: server not found, downloading it (first run, ~one time)...\n")
+        if present:
+            log(f"DotRush server at {REAL_BIN} is {installed_ref() or 'an unrecorded ref'}, plugin pins {wanted}; running installer")
+            sys.stderr.write(f"dotrush: updating the DotRush server to {wanted} (a build from source takes minutes)...\n")
+        else:
+            log(f"DotRush server missing at {REAL_BIN}; running installer {INSTALL_SCRIPT}")
+            sys.stderr.write("dotrush: installing the DotRush server (first run; a build from source takes minutes)...\n")
         try:
             # capture installer output so it never leaks into the LSP stdout stream
             res = subprocess.run(
-                ["bash", INSTALL_SCRIPT, SERVER_DIR],
+                ["bash", INSTALL_SCRIPT, "server", SERVER_DIR],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             for ln in (res.stdout or "").splitlines():
@@ -227,6 +258,7 @@ def ensure_server():
             sys.stderr.write(f"dotrush: install error: {e}\n")
     else:
         log(f"no installer at {INSTALL_SCRIPT}")
+    # A failed update (offline, say) still leaves the previous server runnable.
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 

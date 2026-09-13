@@ -7,9 +7,9 @@ description: Profile CPU usage, hot paths, throughput, or latency in a running .
 
 Collect a bounded sampling trace from the exact .NET process while a representative workload runs, then explain the evidence rather than guessing from source alone.
 
-Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh`. It prefers globally installed tools and otherwise installs the `dotnet-trace` NuGet tool lazily under `${CLAUDE_PLUGIN_DATA}` (or the user cache when that variable is unavailable). The install runs from the tool directory, so a repository's own `NuGet.Config` cannot redirect it; the user's and machine's NuGet configuration still decides the feed.
+Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh`. It runs DotRush's own build of `dotnet-trace` at the DotRush ref the plugin pins, installed exactly as the plugin's DotRush language server is: downloaded from that DotRush release when it ships the bundles, otherwise built once from DotRush source, which needs `git` and a .NET SDK and takes a few minutes. It keeps the tools in `${CLAUDE_PLUGIN_DATA}` (or the user cache) and runs them as `dotnet dotnet-trace.dll`, so a .NET runtime must be on `PATH` or in `DOTNET_ROOT`. `DOTRUSH_DIAGNOSTICS_DIR` points it at a ready directory of the tools instead.
 
-Before the first lazy installation, tell the user that the helper will download a NuGet tool package from their configured feed and honor any runtime approval prompt.
+Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it installs nothing. Its `pinned:` line says whether the tools come from a release or a build from source, and its `diagnostics:` line whether they are installed. If they are not installed, or not at the pin, tell the user what the first profiling command will do (download the release bundle, or build the tools from source for a few minutes) and honor any runtime approval prompt; give that command a timeout long enough for a build. If a build fails, report the log tail it prints and the log path.
 
 ## Workflow
 

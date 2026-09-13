@@ -15,7 +15,7 @@
     },
     "initializationOptions": {},
     "settings": {},
-    "startupTimeout": 180000,
+    "startupTimeout": 900000,
     "restartOnCrash": true,
     "maxRestarts": 2
   }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Collect and summarize bounded .NET CPU traces and managed-heap snapshots.
-# The diagnostic tools are installed lazily outside the user's repository.
+# Collect and summarize bounded .NET CPU traces and managed-heap snapshots with DotRush's own
+# diagnostics tools at the DotRush version this plugin pins.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/dotrush-install.sh"
 
 usage() {
   cat <<'EOF'
@@ -13,8 +14,8 @@ Usage:
   dotrush-profile.sh trace <pid> [duration] [output-dir]
   dotrush-profile.sh trace-report <trace.nettrace> [count]
   dotrush-profile.sh heap <pid> [output-dir]
-  dotrush-profile.sh heap-report <snapshot.gcdump>
-  dotrush-profile.sh heap-diff <baseline.gcdump|heapstat.txt> <current.gcdump|heapstat.txt> [count]
+  dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
+  dotrush-profile.sh heap-diff <baseline.gcdump|.gcdump.json> <current.gcdump|.gcdump.json> [count]
 
 Defaults:
   duration    00:00:30 (hh:mm:ss or dd:hh:mm:ss, hh 00-23, mm/ss 00-59;
@@ -23,10 +24,18 @@ Defaults:
               else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
   count       30
 
+Tools:
+  dotnet-trace and dotnet-gcdump are DotRush's own builds at the ref pinned in
+  dotrush-version.json, installed into $CLAUDE_PLUGIN_DATA/diagnostics (else the user cache)
+  exactly as the language server is: downloaded when the ref is a release that ships its
+  bundles, built from source otherwise (git and a .NET SDK, a few minutes). They run as
+  `dotnet <tool>.dll`. Heap commands need a build whose dotnet-gcdump has --format Json.
+  `tools` shows the pin and what is installed without installing anything.
+
 Overrides:
-  DOTRUSH_TRACE_TOOL       path to dotnet-trace
-  DOTRUSH_GCDUMP_TOOL      path to dotnet-gcdump
-  DOTRUSH_DIAGNOSTICS_DIR  directory for lazily installed tools
+  DOTRUSH_REF              DotRush tag or full commit SHA instead of the pinned one
+  DOTRUSH_REPO             GitHub owner/repository instead of the pinned one
+  DOTRUSH_DIAGNOSTICS_DIR  ready directory holding dotnet-trace.dll and dotnet-gcdump.dll
 EOF
 }
 
@@ -56,59 +65,43 @@ require_duration() {
   [[ -n "${1//[0:]/}" ]] || fail "duration must be greater than zero, got '$1'"
 }
 
-diagnostics_dir() {
-  if [[ -n "${DOTRUSH_DIAGNOSTICS_DIR:-}" ]]; then
-    printf '%s\n' "$DOTRUSH_DIAGNOSTICS_DIR"
-  elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]]; then
-    printf '%s\n' "$CLAUDE_PLUGIN_DATA/diagnostics-tools"
-  else
-    local cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}"
-    printf '%s\n' "$cache_root/dotrush-cc/diagnostics-tools"
-  fi
+# DotRush's fork adds --format Json to dotnet-gcdump; released builds before it lack the option.
+# The help is captured rather than piped to grep -q, which would end the pipe early and fail it
+# under pipefail. stdin is closed so the host cannot swallow a caller's `while read` input.
+supports_gcdump_json() {
+  local help
+  help="$("$DOTRUSH_DOTNET" "$1/dotnet-gcdump.dll" collect --help </dev/null 2>/dev/null)" || true
+  [[ "$help" == *"--format"* ]]
 }
 
-resolve_tool() {
-  local name="$1"
-  local override="$2"
-  local configured="${!override:-}"
-  local tool_dir
-  tool_dir="$(diagnostics_dir)"
-
-  if [[ -n "$configured" ]]; then
-    [[ -x "$configured" ]] || fail "$override points to a non-executable file: $configured"
-    printf '%s\n' "$configured"
-    return
+# Prints the directory to run the tools from: DOTRUSH_DIAGNOSTICS_DIR, else the pinned DotRush
+# diagnostics, installed on first use exactly as the language server is. The tools are
+# framework-dependent and run through the dotnet host.
+resolve_bundle() {
+  local need="${1:-}" dir
+  if [[ -n "${DOTRUSH_DIAGNOSTICS_DIR:-}" ]]; then
+    dir="$DOTRUSH_DIAGNOSTICS_DIR"
+    dotrush_component_ready diagnostics "$dir" \
+      || fail "DOTRUSH_DIAGNOSTICS_DIR holds no dotnet-trace.dll and dotnet-gcdump.dll: $dir"
+  else
+    dir="$(dotrush_data_dir)/diagnostics"
+    dotrush_install diagnostics "$dir" || exit 1
   fi
-
-  if command -v "$name" >/dev/null 2>&1; then
-    command -v "$name"
-    return
+  if [[ "$need" == json ]] && ! supports_gcdump_json "$dir"; then
+    fail "the dotnet-gcdump in $dir has no --format Json; pin a DotRush version that has it"
   fi
+  printf '%s\n' "$dir"
+}
 
-  local candidate
-  for candidate in "$tool_dir/$name" "$tool_dir/$name.exe"; do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
+use_bundle() {
+  DOTRUSH_DOTNET="$(dotrush_dotnet)" || exit 1
+  DOTRUSH_BUNDLE="$(resolve_bundle "${1:-}")" || exit 1
+}
 
-  command -v dotnet >/dev/null 2>&1 || fail "dotnet SDK is required"
-  mkdir -p "$tool_dir"
-  echo "dotrush-profile: installing $name into $tool_dir" >&2
-  # Installed from the tool directory, not the caller's: the .NET CLI resolves NuGet settings
-  # from the working directory up, so running this inside a repository would let its own
-  # NuGet.Config decide which feed these packages come from. User- and machine-level config
-  # (corporate mirrors, proxies) still applies.
-  ( cd "$tool_dir" && dotnet tool install "$name" --tool-path "$tool_dir" ) >&2
-
-  for candidate in "$tool_dir/$name" "$tool_dir/$name.exe"; do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
-  fail "$name installation completed but no executable was found in $tool_dir"
+run_tool() {
+  local tool="$1"
+  shift
+  "$DOTRUSH_DOTNET" "$DOTRUSH_BUNDLE/$tool.dll" "$@"
 }
 
 output_dir() {
@@ -133,39 +126,50 @@ absolute_path() {
   printf '%s/%s\n' "$dir" "$(basename "$value")"
 }
 
-heap_report_path() {
-  local dump="$1"
-  printf '%s.heapstat.txt\n' "${dump%.gcdump}"
-}
-
-# dotnet-trace names the converted file with Path.ChangeExtension(--output, "speedscope.json"),
-# which replaces everything after the last dot of the file name and only appends when the name
-# has no dot at all. Stripping a ".nettrace" suffix instead disagrees on any dotted stem.
-speedscope_report_path() {
-  local target="$1"
+# Both tools name converted files with Path.ChangeExtension, which replaces everything after the
+# last dot of the file name and only appends when the name has no dot at all. Stripping a known
+# suffix instead disagrees on any dotted stem.
+change_extension() {
+  local target="$1" extension="$2"
   local dir base
   dir="$(dirname "$target")"
   base="$(basename "$target")"
   base="${base%.*}"
   if [[ "$target" == */* ]]; then
-    printf '%s/%s.speedscope.json\n' "$dir" "$base"
+    printf '%s/%s.%s\n' "$dir" "$base" "$extension"
   else
-    printf '%s.speedscope.json\n' "$base"
+    printf '%s.%s\n' "$base" "$extension"
   fi
 }
 
-create_heap_report() {
-  local dump="$1"
-  local report
-  local gcdump_tool
-  [[ -f "$dump" ]] || fail "heap snapshot not found: $dump"
-  report="$(heap_report_path "$dump")"
-  gcdump_tool="$(resolve_tool dotnet-gcdump DOTRUSH_GCDUMP_TOOL)"
-  if ! "$gcdump_tool" report "$dump" > "$report"; then
-    rm -f "$report"
-    fail "dotnet-gcdump report failed for $dump"
+speedscope_report_path() {
+  change_extension "$1" speedscope.json
+}
+
+# dotnet-gcdump keeps a name that already ends in .gcdump.json and otherwise changes the
+# extension, so heap.gcdump gets its graph as heap.gcdump.json.
+gcdump_json_path() {
+  if [[ "$1" == *.gcdump.json ]]; then
+    printf '%s\n' "$1"
+  else
+    change_extension "$1" gcdump.json
   fi
-  absolute_path "$report"
+}
+
+# Prints the absolute path of a snapshot's heap graph, converting a .gcdump that has none yet.
+ensure_gcdump_json() {
+  local input="$1" graph
+  [[ -n "$input" ]] || fail "expected a .gcdump or .gcdump.json snapshot"
+  [[ "$input" != *.heapstat.txt ]] \
+    || fail "heap-stat text reports are no longer read; pass the .gcdump it was made from instead of $input"
+  [[ -f "$input" ]] || fail "heap snapshot not found: $input"
+  graph="$(gcdump_json_path "$input")"
+  if [[ ! -f "$graph" ]]; then
+    use_bundle json
+    run_tool dotnet-gcdump convert "$input" --format Json >&2 || fail "dotnet-gcdump convert failed for $input"
+    [[ -f "$graph" ]] || fail "dotnet-gcdump convert reported success but wrote no $graph"
+  fi
+  absolute_path "$graph"
 }
 
 write_trace_report() {
@@ -174,31 +178,55 @@ write_trace_report() {
   python3 "$SCRIPT_DIR/summarize-speedscope.py" "$speedscope_file" --limit "$count"
 }
 
+write_heap_report() {
+  python3 "$SCRIPT_DIR/analyze-gcdump.py" report "$1" --limit "$2"
+}
+
 command_name="${1:-}"
 case "$command_name" in
   tools)
-    trace_tool="$(resolve_tool dotnet-trace DOTRUSH_TRACE_TOOL)"
-    gcdump_tool="$(resolve_tool dotnet-gcdump DOTRUSH_GCDUMP_TOOL)"
-    echo "dotnet-trace: $trace_tool"
-    "$trace_tool" --version
-    echo "dotnet-gcdump: $gcdump_tool"
-    "$gcdump_tool" --version
+    DOTRUSH_DOTNET="$(dotrush_dotnet)" || exit 1
+    repo="$(dotrush_repo)" || exit 1
+    ref="$(dotrush_ref)" || exit 1
+    origin="$(dotrush_source "$repo" "$ref")" || exit 1
+    echo "dotnet: $DOTRUSH_DOTNET"
+    if [[ "$origin" == release ]]; then
+      echo "pinned: $repo@$ref, installed from its release bundles"
+    else
+      echo "pinned: $repo@$ref, built from source (needs git and a .NET SDK, a few minutes per component)"
+    fi
+    for component in server diagnostics; do
+      dir="$(dotrush_data_dir)/$component"
+      [[ "$component" != server ]] || dir="${DOTRUSH_SERVER_DIR:-$dir}"
+      if [[ "$component" == diagnostics && -n "${DOTRUSH_DIAGNOSTICS_DIR:-}" ]]; then
+        dir="$DOTRUSH_DIAGNOSTICS_DIR"
+        state="DOTRUSH_DIAGNOSTICS_DIR"
+      elif dotrush_is_current "$component" "$dir" "$ref"; then
+        state="installed"
+      elif dotrush_component_ready "$component" "$dir"; then
+        installed="$(dotrush_installed_ref "$dir")"
+        state="installed at ${installed:-an unrecorded ref}, not the pin; the next use reinstalls it"
+      else
+        state="not installed; the next use installs it"
+      fi
+      if [[ "$component" == diagnostics ]] && dotrush_component_ready diagnostics "$dir"; then
+        json="no"
+        supports_gcdump_json "$dir" && json="yes"
+        state="$state, gcdump-json=$json"
+      fi
+      echo "$component: $state ($dir)"
+    done
     ;;
 
   ps)
     profiler_type="${2:-trace}"
     case "$profiler_type" in
-      trace)
-        tool="$(resolve_tool dotnet-trace DOTRUSH_TRACE_TOOL)"
-        ;;
-      gcdump|heap)
-        tool="$(resolve_tool dotnet-gcdump DOTRUSH_GCDUMP_TOOL)"
-        ;;
-      *)
-        fail "unknown profiler type '$profiler_type'; expected trace or gcdump"
-        ;;
+      trace) tool="dotnet-trace" ;;
+      gcdump|heap) tool="dotnet-gcdump" ;;
+      *) fail "unknown profiler type '$profiler_type'; expected trace or gcdump" ;;
     esac
-    "$tool" ps
+    use_bundle
+    run_tool "$tool" ps
     ;;
 
   trace)
@@ -215,16 +243,16 @@ case "$command_name" in
     trace_file="$base.nettrace"
     speedscope_file="$(speedscope_report_path "$trace_file")"
     report_file="$base.top30.txt"
-    trace_tool="$(resolve_tool dotnet-trace DOTRUSH_TRACE_TOOL)"
+    use_bundle
 
     # Each artifact path is printed as soon as it exists: a later step failing must not discard
     # the pointer to a capture that already cost an attach.
     # The tools narrate to stdout; stdout here is the KEY=value contract the skills parse, so
     # their chatter goes to stderr alongside our own progress messages.
-    "$trace_tool" collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
+    run_tool dotnet-trace collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
     echo "TRACE=$trace_file"
 
-    "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file" >&2
+    run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
     # ConvertToFormat swallows its own failure and still exits 0, so check the file itself.
     [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
     echo "SPEEDSCOPE=$speedscope_file"
@@ -245,10 +273,10 @@ case "$command_name" in
     if [[ "$trace_file" == *.speedscope.json ]]; then
       speedscope_file="$trace_file"
     else
-      trace_tool="$(resolve_tool dotnet-trace DOTRUSH_TRACE_TOOL)"
       speedscope_file="$(speedscope_report_path "$trace_file")"
       if [[ ! -f "$speedscope_file" ]]; then
-        "$trace_tool" convert "$trace_file" --format speedscope --output "$trace_file" >&2
+        use_bundle
+        run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
         [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
       fi
     fi
@@ -263,38 +291,43 @@ case "$command_name" in
     destination="$(cd "$destination" && pwd)"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     # $$ separates concurrent captures of the same PID within one second.
-    dump="$destination/heap_${stamp}_${pid}_$$.gcdump"
-    gcdump_tool="$(resolve_tool dotnet-gcdump DOTRUSH_GCDUMP_TOOL)"
+    base="$destination/heap_${stamp}_${pid}_$$"
+    dump="$base.gcdump"
+    graph="$(gcdump_json_path "$dump")"
+    report_file="$base.report.txt"
+    use_bundle json
 
     # Printed before the report step: that collection already forced a full gen-2 GC on the
-    # target, so its path must survive a failure to summarize it.
-    "$gcdump_tool" collect --process-id "$pid" --output "$dump" >&2
+    # target, so its paths must survive a failure to summarize it.
+    run_tool dotnet-gcdump collect --process-id "$pid" --output "$dump" --format Json >&2
     echo "GCDUMP=$dump"
+    [[ -f "$graph" ]] || fail "dotnet-gcdump collect wrote no $graph; the .gcdump above is intact"
+    echo "GCDUMP_JSON=$graph"
 
-    report="$(create_heap_report "$dump")"
-    echo "REPORT=$report"
+    if write_heap_report "$graph" 30 > "$report_file"; then
+      echo "REPORT=$report_file"
+    else
+      rm -f "$report_file"
+      fail "report generation failed; the artifacts printed above are intact"
+    fi
     ;;
 
   heap-report)
-    dump="${2:-}"
-    create_heap_report "$dump"
+    count="${3:-30}"
+    require_count "$count"
+    graph="$(ensure_gcdump_json "${2:-}")" || exit 1
+    write_heap_report "$graph" "$count"
     ;;
 
   heap-diff)
     baseline="${2:-}"
     current="${3:-}"
     count="${4:-30}"
-    [[ -n "$baseline" && -n "$current" ]] || fail "heap-diff needs baseline and current files"
+    [[ -n "$baseline" && -n "$current" ]] || fail "heap-diff needs baseline and current snapshots"
     require_count "$count"
-    if [[ "$baseline" == *.gcdump ]]; then
-      baseline="$(create_heap_report "$baseline")"
-    fi
-    if [[ "$current" == *.gcdump ]]; then
-      current="$(create_heap_report "$current")"
-    fi
-    [[ -f "$baseline" ]] || fail "baseline report not found: $baseline"
-    [[ -f "$current" ]] || fail "current report not found: $current"
-    python3 "$SCRIPT_DIR/compare-heapstats.py" "$baseline" "$current" --limit "$count"
+    baseline="$(ensure_gcdump_json "$baseline")" || exit 1
+    current="$(ensure_gcdump_json "$current")" || exit 1
+    python3 "$SCRIPT_DIR/analyze-gcdump.py" diff "$baseline" "$current" --limit "$count"
     ;;
 
   -h|--help|help)

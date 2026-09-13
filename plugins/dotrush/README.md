@@ -11,26 +11,53 @@ Wires the [DotRush](https://github.com/JaneySprings/DotRush) Roslyn language ser
 | `.claude-plugin/plugin.json` | plugin manifest; declares the `csharp` LSP server via `.lsp.json` |
 | `.lsp.json` | maps `.cs/.csx/.cshtml` → `bin/lsp-proxy.py`; wires portable `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` paths + a 180 s startup timeout (first-run download) |
 | `bin/lsp-proxy.py` | stdio man-in-the-middle: verbatim forwarding + custom-message injection + auto-install-on-first-run (stdlib-only Python 3) |
-| `scripts/install-dotrush.sh` | downloads the DotRush server bundle for this OS/arch into `${CLAUDE_PLUGIN_DATA}/server` |
-| `scripts/dotrush-profile.sh` | lazily installs the `dotnet-trace`/`dotnet-gcdump` NuGet tools (from the tool dir, not your repo), then collects and reports bounded CPU traces or GC dumps |
+| `dotrush-version.json` | pins the DotRush repository and the one tag or commit both the server and the profiling tools come from |
+| `scripts/install-dotrush.sh` | installs the DotRush server or profiling tools at the pinned ref: the release bundles when the release ships them, otherwise a build from source (logic shared in `scripts/dotrush-install.sh`) |
+| `scripts/dotrush-profile.sh` | runs DotRush's own `dotnet-trace`/`dotnet-gcdump` at the pinned ref, installed exactly as the server is, then collects and reports bounded CPU traces or GC dumps |
 | `scripts/summarize-speedscope.py` | derives full-name exclusive/inclusive managed-CPU rankings from Speedscope output |
-| `scripts/compare-heapstats.py` | ranks per-type object-count deltas between two `dotnet-gcdump report` tables (backs `heap-diff`); reports no per-type bytes, because gcdump prints only one sampled size per type |
+| `scripts/analyze-gcdump.py` | streams the heap graph DotRush's `dotnet-gcdump --format Json` writes: exact per-type bytes, the largest retained objects with their dominator chain, and snapshot diffs (backs `heap-report`/`heap-diff`) |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
-| `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots and compares heap-stat reports for managed-memory growth |
+| `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
 ## The server auto-installs
 
-On first C# LSP use, the proxy checks `${CLAUDE_PLUGIN_DATA}/server/DotRush`. If missing, it runs
-`install-dotrush.sh`, which downloads `DotRush.Bundle.Server_<os>-<arch>.zip` from the official
-GitHub release and extracts it there. One-time, ~48 MB. Supported: `darwin`/`linux`/`win32` × `arm64`/`x64`.
+The DotRush version this plugin version uses is pinned in `dotrush-version.json`, one ref for everything:
 
-Manual / re-install (e.g. to pin a version):
-```bash
-DOTRUSH_RELEASE=2026.07 bash "$PLUGIN/scripts/install-dotrush.sh" "$DATA/server" --force
+```json
+{
+  "repository": "JaneySprings/DotRush",
+  "ref": "b720de7ca8d44e125fd56bad860564bd48e31281"
+}
 ```
-Requires `curl` + `unzip`. Override the release with `DOTRUSH_RELEASE`, or point at an existing
-server binary with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp.json`).
+
+`ref` is a release tag or a full commit SHA. The language server and the profiling tools are both installed from
+it by `install-dotrush.sh`, the same way and from the same place:
+
+- a **release tag** whose GitHub release ships `DotRush.Bundle.Server_<os>-<arch>.zip` and
+  `DotRush.Bundle.Diagnostics_<os>-<arch>.zip`: both bundles are downloaded (`curl` + `unzip`);
+- **anything else**, a commit or a release missing either bundle: both are built from source at that ref (`git` +
+  a .NET 10 SDK, a few minutes per component). The server is `dotnet publish`ed for this platform,
+  framework-dependent with its `DotRush` launcher, as the release bundle is; the profiling tools are
+  `dotnet-trace` and `dotnet-gcdump` published from the diagnostics submodule.
+
+The pin is currently a commit on DotRush `main` from 10 September 2026, nine commits after 2026.09: no release has
+`dotnet-gcdump --format Json` yet, and none ships a diagnostics bundle. Once one does, pin its tag.
+
+On C# LSP start the proxy compares `${CLAUDE_PLUGIN_DATA}/server/.dotrush-ref` with the pin. When the server is
+missing or at another ref, it runs the installer, which prepares the new server beside the old one and swaps it in
+whole; if that fails, the previous server keeps running. A build makes that first start take minutes, so
+`.lsp.json` allows 15. Concurrent sessions wait for one install rather than repeating it, and a failed build keeps
+its log in `${CLAUDE_PLUGIN_DATA}/server-build.log`.
+
+Manual / re-install:
+```bash
+bash "$PLUGIN/scripts/install-dotrush.sh" server "$DATA/server" --force
+bash "$PLUGIN/scripts/install-dotrush.sh" diagnostics "$DATA/diagnostics" --force
+```
+Override the ref with `DOTRUSH_REF` and the repository with `DOTRUSH_REPO`, or point at an existing server binary
+with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp.json`); a server named by `DOTRUSH_REAL_BIN` is
+never installed over.
 
 ## Point DotRush at your project
 
@@ -89,15 +116,20 @@ The plugin mirrors DotRush's profiling split with two Claude skills:
   `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval and creates a `.nettrace`, a
   `.speedscope.json`, and a text top-method report.
 - Ask Claude to **profile managed memory**, investigate a suspected leak, compare heap snapshots, or invoke
-  `dotrush-profile-memory`. It collects `.gcdump` files, produces heap-stat reports, and can rank per-type
-  object-count deltas between a baseline and a later snapshot. Per-type *byte* deltas are deliberately not
-  reported: `dotnet-gcdump report` prints one sampled object size per type, never a total, so a computed
-  byte delta can move opposite to reality. The heap-wide `HeapBytes` delta is sound and is reported.
+  `dotrush-profile-memory`. It collects a `.gcdump` together with its heap graph as `.gcdump.json`, reports
+  exact per-type bytes and the largest retained objects with the dominator chain that keeps each alive, and
+  ranks per-type byte and object-count deltas between a baseline and a later snapshot.
 
-Both skills use `scripts/dotrush-profile.sh`. It uses globally available `dotnet-trace`/`dotnet-gcdump`
-commands when present; otherwise it lazily installs them as NuGet tools under `${CLAUDE_PLUGIN_DATA}`. That
-install runs from the tool directory rather than your repository, so a repo-local `NuGet.Config` cannot
-redirect which package is fetched; your own NuGet configuration still applies.
+Both skills use `scripts/dotrush-profile.sh`, which runs DotRush's own build of `dotnet-trace` and
+`dotnet-gcdump` ([JaneySprings/diagnostics](https://github.com/JaneySprings/diagnostics)) at the pinned ref. The
+tools are installed into `${CLAUDE_PLUGIN_DATA}/diagnostics` on first use exactly as the server is (see
+[The server auto-installs](#the-server-auto-installs)); a failed build keeps its log in
+`${CLAUDE_PLUGIN_DATA}/diagnostics-build.log`. They run as `dotnet <tool>.dll`, so a .NET runtime must be on
+`PATH` or in `DOTNET_ROOT`. `dotrush-profile.sh tools` shows the pin, whether it installs from a release or builds,
+and the state of the server and the tools, installing nothing. `DOTRUSH_DIAGNOSTICS_DIR` uses a ready directory of
+the tools instead.
+
+The memory reports need a `dotnet-gcdump` with `--format Json`; the heap commands refuse a pinned build without it.
 Artifacts never default into your repository: without an explicit output directory they go to
 `$DOTRUSH_PROFILE_OUTPUT_DIR`, else `${CLAUDE_PLUGIN_DATA}/profiles`, else
 `${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles`. Claude or the user can always supply one instead.
@@ -169,12 +201,34 @@ Notes (learned while verifying this):
 ## Troubleshooting
 
 - **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-pick-project`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
-- **Server didn't download** → check `curl`/`unzip` exist; run `install-dotrush.sh` manually; inspect `proxy.log`.
+- **Server or profiling tools didn't install** → run `dotrush-profile.sh tools` to see the pin and whether it downloads
+  or builds. A download needs `curl`/`unzip`; a build needs `git` and a .NET SDK and keeps its log in
+  `${CLAUDE_PLUGIN_DATA}/<component>-build.log`. Run `install-dotrush.sh server` (or `diagnostics`) by hand and inspect `proxy.log`.
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
 
 ## Changelog
+
+### 0.5.0
+- DotRush is pinned in `dotrush-version.json` to one `ref`, a release tag or a commit. The language server and the
+  profiling tools are installed from it the same way and from the same place: the release's server and diagnostics
+  bundles when the release ships both, otherwise both built from source at that ref. The pin is a commit after
+  2026.09; the server was pinned to 2026.07 before. Each install records its ref in `.dotrush-ref`, and the proxy
+  reinstalls a server at another ref, swapping it in whole and keeping the previous server if that fails. `.lsp.json`
+  now allows 15 minutes for a start that builds.
+- The profiling skills now run DotRush's own `dotnet-trace` and `dotnet-gcdump` instead of the NuGet tools. The NuGet
+  install, `DOTRUSH_TRACE_TOOL`, `DOTRUSH_GCDUMP_TOOL` and `DOTRUSH_RELEASE` are gone (use `DOTRUSH_REF`), and so are
+  the NuGet tools 0.4.0 left in `diagnostics-tools`. `DOTRUSH_DIAGNOSTICS_DIR` now names a ready directory of the
+  tools, and `tools` shows the pin and what is installed.
+- `heap` collects with `dotnet-gcdump --format Json` and prints `GCDUMP_JSON=` after `GCDUMP=`. The memory
+  reports read that heap graph instead of parsing `dotnet-gcdump report` text, so per-type bytes are exact
+  and `heap-report` lists the largest retained objects with the dominator chain that keeps each alive.
+  `heap-diff` ranks exact per-type byte deltas alongside count deltas. This needs a DotRush build whose
+  `dotnet-gcdump` has `--format Json`; without one the heap commands fail instead of falling back.
+- `scripts/analyze-gcdump.py` replaces `scripts/compare-heapstats.py` and streams the JSON, so a large heap's
+  per-object arrays are never loaded whole. `heap-report` now prints the report rather than a file path, and
+  0.4.0 `.heapstat.txt` files are refused; their `.gcdump` files still work and are converted on first use.
 
 ### 0.4.0
 - Added `dotrush-profile-cpu` for bounded `dotnet-trace` capture, Speedscope conversion, and top-method reports.
