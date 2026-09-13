@@ -47,11 +47,19 @@ LSP restarts, so within a session it's asked only once.
    printf '%s\n' '{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":true}' > "$WSDIR/target.json"
    ```
 
-6. **Apply it live now** (no restart) via this workspace's FIFO:
+6. **Apply it live now** (no restart) via this workspace's FIFO. Always send the configuration:
    ```bash
    printf '%s\n' '{"method":"workspace/didChangeConfiguration","params":{"settings":{"dotrush":{"roslyn":{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":true}}}}}' > "$FIFO"
-   printf '%s\n' '{"method":"dotrush/reloadWorkspace","params":{"workspaceFolders":[{"uri":"file://<WORKDIR>","name":"ws"}]}}' > "$FIFO"
    ```
+   Then send a reload **only if `"$WSDIR/load-completed"` exists**:
+   ```bash
+   [ -f "$WSDIR/load-completed" ] && printf '%s\n' '{"method":"dotrush/reloadWorkspace","params":{"workspaceFolders":[{"uri":"file://<WORKDIR>","name":"ws"}]}}' > "$FIFO"
+   ```
+   Without that file DotRush has not loaded a project yet: its initialization is waiting for the configuration
+   and loads the project itself as soon as it arrives. A reload at that point races the initial load: DotRush then
+   either never starts code analysis (diagnostics stay silent until a restart) or loads the project twice and
+   reports every diagnostic twice.
+   With the file, the server is already initialized and needs the reload to switch projects.
 
 7. **Verify** — wait a few seconds (large solutions take longer), then run an LSP `documentSymbol` on a
    `.cs` file from the chosen project. Symbols back → success. Still empty → `tail -n 30 "$WSDIR/proxy.log"`

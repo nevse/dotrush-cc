@@ -18,7 +18,10 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/dotrush-profile.sh` | runs DotRush's own `dotnet-trace`/`dotnet-gcdump` at the pinned ref, installed exactly as the server is, then collects and reports bounded CPU traces or GC dumps |
 | `scripts/summarize-speedscope.py` | derives full-name exclusive/inclusive managed-CPU rankings from Speedscope output |
 | `scripts/analyze-gcdump.py` | streams the heap graph DotRush's `dotnet-gcdump --format Json` writes: exact per-type bytes, the largest retained objects with their dominator chain, and snapshot diffs (backs `heap-report`/`heap-diff`) |
+| `scripts/dotrush-diagnostics.sh` | injects `dotrush/solutionDiagnostics` into this session's server, waits for the results the proxy captures, and reports them |
+| `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
+| `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
@@ -147,6 +150,32 @@ seconds) and `24:00:00` is `dd:hh:mm` (24 days, not one). For a day or more, use
 explicit impact check before attaching to production or another latency-sensitive process. Neither skill
 uploads profiling artifacts to external viewers.
 
+## Solution diagnostics
+
+Ask Claude for **solution diagnostics** ("what compiler errors does the solution have?") or invoke
+`dotrush-diagnostics`. It runs DotRush's whole-solution compiler analysis in the session's server and reports
+counts by severity, the most frequent codes, and the errors and warnings with their locations. Nothing is built.
+
+DotRush sends analysis results only as `textDocument/publishDiagnostics` notifications to the client, and
+Claude Code does not put diagnostics published outside an edit in front of the model. So the proxy mirrors every
+publish into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of the
+last one. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
+count moves and publishing has been quiet for two seconds, because DotRush signals no completion.
+
+```bash
+"$PLUGIN/scripts/dotrush-diagnostics.sh" where          # session dir, proxy, chosen project, publish count
+"$PLUGIN/scripts/dotrush-diagnostics.sh" solution 100   # analyze, wait, list up to 100 diagnostics
+"$PLUGIN/scripts/dotrush-diagnostics.sh" report         # last published results, no analysis
+```
+
+What to expect:
+- Only **compiler** diagnostics (with suppressors applied); analyzer packages are not part of a solution run.
+- Hints are counted but not listed; `summarize-diagnostics.py --hints` lists them.
+- DotRush publishes only files with diagnostics or that just lost them, so a clean solution publishes nothing and
+  `solution` exits 3 after `DOTRUSH_DIAGNOSTICS_TIMEOUT` (default 300 s) — as does an analysis still running.
+- Any later analysis replaces the set: once Claude Code opens or edits a file, DotRush re-analyzes that document
+  and clears the others, so run `solution` again for the whole view. An edit during the analysis cancels it.
+
 ## Injecting custom LSP messages (the proxy)
 
 The proxy forwards Claude ⇄ DotRush verbatim and injects newline-delimited JSON-RPC written to a FIFO,
@@ -180,7 +209,7 @@ client tolerates it.
 
 | Method | Params | Effect |
 |--------|--------|--------|
-| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics` (Claude Code surfaces the new diagnostics automatically) |
+| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics`, captured in `diagnostics.json` (see [Solution diagnostics](#solution-diagnostics)) |
 | `dotrush/documentDiagnostics` | `DidOpenTextDocumentParams` | analyze a single document |
 | `dotrush/reloadWorkspace` | `{"workspaceFolders":[{"uri","name"}]}` | clear caches, re-run project load |
 | `workspace/didChangeConfiguration` | `{"settings":{"dotrush":{"roslyn":{…}}}}` | replace the roslyn config (see live reload) |
@@ -199,11 +228,21 @@ Notes (learned while verifying this):
 - `didChangeConfiguration` **replaces the entire roslyn section** — include every setting you care about.
 - A reload emits `dotrush/projectLoaded` per project but **not** `dotrush/loadCompleted` (that fires only
   on initial init). Wait on `projectLoaded` + memory settling.
+- **Don't reload a server that has not completed its first load.** DotRush's `initialize` waits for a
+  configuration, then loads the project and only then starts its code-analysis worker and sends
+  `dotrush/loadCompleted`. On a server started with no project, `didChangeConfiguration` alone loads it; adding
+  `reloadWorkspace` races that load, and DotRush either never starts analysis or loads the project twice (every
+  diagnostic reported twice). The proxy creates `load-completed` in the session
+  dir on `dotrush/loadCompleted`, so reload only when that file exists (`dotrush-pick-project` does this).
 - Inject `didChangeConfiguration` **before** `reloadWorkspace` (FIFO delivery is in order).
 
 ## Troubleshooting
 
 - **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-pick-project`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
+- **Navigation works but no diagnostics ever arrive** (`dotrush-diagnostics.sh where` shows `load: not completed`
+  long after `projectLoaded`) → the project was loaded with a `dotrush/reloadWorkspace` before DotRush's first load
+  completed, so its analysis worker never started. The same race can instead load the project twice, which shows
+  as every diagnostic listed twice. Restart Claude Code either way; the chosen project is replayed at startup.
 - **Server or profiling tools didn't install** → run `dotrush-profile.sh tools` to see the pin and whether it downloads
   or builds. A download needs `curl`/`unzip`; a build needs `git` and a .NET SDK and keeps its log in
   `${CLAUDE_PLUGIN_DATA}/<component>-build.log`. Run `install-dotrush.sh server` (or `diagnostics`) by hand and inspect `proxy.log`.

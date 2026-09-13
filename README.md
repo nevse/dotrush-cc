@@ -99,15 +99,12 @@ P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   #
 "$P/scripts/dotrush-profile.sh" heap-diff base.gcdump current.gcdump 30
 ```
 
-**Analyze the whole solution on demand** by injecting a DotRush notification into the running server
-(finding `$FIFO` is described in the [plugin README](plugins/dotrush/README.md#injecting-custom-lsp-messages-the-proxy)):
+**Check the whole solution for compiler errors** without building:
 
-```bash
-echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$FIFO"
-```
+> what compiler errors and warnings does the solution have?
 
-DotRush answers with a burst of `textDocument/publishDiagnostics`, one per file with findings; the proxy log
-records the notifications but not their contents.
+Claude runs DotRush's solution analysis in the language server and reports counts by severity, the most
+frequent codes, and each error with its location (the `dotrush-diagnostics` skill).
 
 ## What's in here
 
@@ -124,7 +121,10 @@ dotrush-cc/
     ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU traces and GC dumps
     ├── scripts/summarize-speedscope.py   # produces agent-readable managed-CPU rankings
     ├── scripts/analyze-gcdump.py         # streams gcdump JSON: per-type bytes, retention chains, snapshot diffs
+    ├── scripts/dotrush-diagnostics.sh    # runs solution analysis in the session's server and reports the results
+    ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
     ├── skills/dotrush-pick-project/      # picks the .sln/.slnx/.csproj DotRush loads, applied live
+    ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
     ├── README.md                         # plugin usage

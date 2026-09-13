@@ -61,6 +61,12 @@ LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(WS_DIR, "proxy.log")
 # `dotrush-pick-project` skill, replayed here at startup so the target loads without a
 # dotrush.config.json in the user's repo.
 TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(WS_DIR, "target.json")
+# The latest diagnostics DotRush published, read by the `dotrush-diagnostics` skill.
+DIAGNOSTICS_FILE = os.environ.get("DOTRUSH_DIAGNOSTICS_FILE") or os.path.join(WS_DIR, "diagnostics.json")
+# Present once DotRush sends dotrush/loadCompleted. Until then its initialize is still waiting for a
+# first project: a dotrush/reloadWorkspace then races that load, and DotRush either never starts code
+# analysis or loads the project twice and reports every diagnostic twice.
+LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
 
 _log_lock = threading.Lock()
 _stdin_lock = threading.Lock()  # serializes writes into DotRush's stdin
@@ -129,6 +135,69 @@ def brief(body):
     return "<unknown>"
 
 
+class DiagnosticsStore:
+    """Mirrors the diagnostics DotRush publishes to Claude Code into one JSON file.
+
+    DotRush answers `dotrush/solutionDiagnostics` only with textDocument/publishDiagnostics
+    notifications, which go to the client, so the proxy keeps the latest list per URI (an empty
+    list clears it) plus a publish count and time. The `dotrush-diagnostics` skill injects a request,
+    then waits for the count to move and publishing to go quiet. Writes are coalesced so a burst
+    across a large solution rewrites the file a few times, not once per document."""
+
+    FLUSH_SECONDS = 0.5
+
+    def __init__(self, path):
+        self.path = path
+        self.files = {}
+        self.publishes = 0
+        self.updated = None
+        self.dirty = False
+        self.cond = threading.Condition()
+
+    def record_frame(self, body):
+        try:
+            msg = json.loads(body)
+        except ValueError:
+            return
+        if not isinstance(msg, dict) or msg.get("method") != "textDocument/publishDiagnostics":
+            return
+        params = msg.get("params") or {}
+        uri = params.get("uri")
+        if not isinstance(uri, str):
+            return
+        diagnostics = params.get("diagnostics") or []
+        with self.cond:
+            if diagnostics:
+                self.files[uri] = diagnostics
+            else:
+                self.files.pop(uri, None)
+            self.publishes += 1
+            self.updated = time.time()
+            self.dirty = True
+            self.cond.notify()
+
+    def write(self):
+        with self.cond:
+            snapshot = {"publishes": self.publishes, "updated": self.updated, "files": dict(self.files)}
+            self.dirty = False
+        tmp = f"{self.path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f)
+            os.replace(tmp, self.path)
+        except OSError as e:
+            log(f"cannot write diagnostics to {self.path}: {e}")
+
+    def flusher(self):
+        while True:
+            with self.cond:
+                while not self.dirty:
+                    self.cond.wait()
+            time.sleep(self.FLUSH_SECONDS)
+            self.write()
+
+
 def pump_client_to_server(child_stdin):
     reader = FrameReader(0)
     while True:
@@ -146,7 +215,7 @@ def pump_client_to_server(child_stdin):
             child_stdin.flush()
 
 
-def pump_server_to_client(child_stdout):
+def pump_server_to_client(child_stdout, diagnostics=None):
     reader = FrameReader(child_stdout.fileno())
     while True:
         f = reader.read_frame()
@@ -155,9 +224,22 @@ def pump_server_to_client(child_stdout):
             return
         header, body = f
         os.write(1, header + body)
+        # The substring test keeps large responses from being parsed a second time.
+        if diagnostics is not None and b'"textDocument/publishDiagnostics"' in body:
+            diagnostics.record_frame(body)
         b = brief(body)
+        if b == "notif    dotrush/loadCompleted":
+            mark_load_completed()
         if not b.startswith("response"):
             log(f"S->C {b}")
+
+
+def mark_load_completed():
+    try:
+        with open(LOAD_COMPLETED_FILE, "w") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
+    except OSError as e:
+        log(f"cannot write {LOAD_COMPLETED_FILE}: {e}")
 
 
 def pump_stderr(child_stderr):
@@ -330,6 +412,12 @@ def ensure_workspace_dir():
                 f.write(SESSION_ID + "\n")
     except OSError as e:
         log(f"cannot init workspace dir {WS_DIR}: {e}")
+    try:
+        os.remove(LOAD_COMPLETED_FILE)  # the server about to start has loaded nothing
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log(f"cannot remove {LOAD_COMPLETED_FILE}: {e}")
 
 
 def startup_config_inject(child_stdin):
@@ -384,14 +472,18 @@ def main():
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
     )
     startup_config_inject(child.stdin)  # push the persisted target before the client's traffic
+    # A fresh server has published nothing, so replace whatever an earlier server in this session left.
+    diagnostics = DiagnosticsStore(DIAGNOSTICS_FILE)
+    diagnostics.write()
     for t in (
         threading.Thread(target=pump_client_to_server, args=(child.stdin,), daemon=True),
         threading.Thread(target=pump_stderr, args=(child.stderr,), daemon=True),
         threading.Thread(target=injector, args=(child.stdin,), daemon=True),
+        threading.Thread(target=diagnostics.flusher, daemon=True),
     ):
         t.start()
     try:
-        pump_server_to_client(child.stdout)
+        pump_server_to_client(child.stdout, diagnostics)
     finally:
         if child.poll() is None:
             child.terminate()

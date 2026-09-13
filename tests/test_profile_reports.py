@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -789,6 +790,178 @@ class InstallTests(unittest.TestCase):
         self.assertNotEqual(without.returncode, 0)
         self.assertIn("has no --format Json", without.stderr)
         self.assertEqual(with_format.returncode, 0, with_format.stderr)
+
+
+SUMMARIZE_DIAGNOSTICS = ROOT / "plugins/dotrush/scripts/summarize-diagnostics.py"
+DIAGNOSTICS_SH = ROOT / "plugins/dotrush/scripts/dotrush-diagnostics.sh"
+
+
+def lsp_frame(message):
+    body = json.dumps(message).encode("utf-8")
+    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+
+
+def publish(uri, *diagnostics):
+    return {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+            "params": {"uri": uri, "diagnostics": list(diagnostics)}}
+
+
+def diagnostic(line, character, severity, code, message):
+    return {"range": {"start": {"line": line, "character": character}, "end": {"line": line, "character": character + 1}},
+            "severity": severity, "code": code, "message": message}
+
+
+class DiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_store(self, path, files, publishes=1, updated=None):
+        path.write_text(json.dumps({"publishes": publishes, "updated": time.time() - 60 if updated is None else updated,
+                                    "files": files}))
+
+    def test_proxy_forwards_frames_verbatim_and_mirrors_published_diagnostics(self):
+        store = self.root / "diagnostics.json"
+        a, b = "file:///src/A.cs", "file:///src/B.cs"
+        stream = b"".join([
+            lsp_frame(publish(a, diagnostic(1, 2, 1, "CS0029", "bad"), diagnostic(3, 0, 2, "CS0219", "unused"))),
+            # Mentions the method without being the notification, so it must not count as a publish.
+            lsp_frame({"jsonrpc": "2.0", "id": 7, "result": {"note": "textDocument/publishDiagnostics"}}),
+            lsp_frame(publish(b, diagnostic(0, 0, 2, "CS0168", "declared"))),
+            lsp_frame(publish(a)),
+            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
+        ])
+        script = (
+            "import importlib.util, os, sys\n"
+            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
+            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
+            "os.makedirs(proxy.WS_DIR)\n"
+            "store = proxy.DiagnosticsStore(sys.argv[1])\n"
+            "proxy.pump_server_to_client(sys.stdin, store)\n"
+            "store.write()\n"
+            "sys.stderr.write(proxy.LOAD_COMPLETED_FILE)\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "pump"}
+        result = subprocess.run([sys.executable, "-c", script, str(store)], input=stream, env=env, capture_output=True, check=True)
+
+        self.assertEqual(result.stdout, stream)
+        self.assertTrue(Path(result.stderr.decode()).is_file())
+        data = json.loads(store.read_text())
+        self.assertEqual(data["publishes"], 3)
+        self.assertEqual(list(data["files"]), [b])
+        self.assertIsInstance(data["updated"], float)
+
+    def test_summary_lists_errors_first_with_one_based_positions_relative_to_the_root(self):
+        store = self.root / "diagnostics.json"
+        self.write_store(store, {
+            (self.root / "b/Z.cs").as_uri(): [diagnostic(9, 4, 2, "CS0219", "unused\nsecond line")],
+            (self.root / "a/Y.cs").as_uri(): [diagnostic(0, 0, 1, "CS0029", "bad"), diagnostic(2, 1, 2, "CS0219", "unused")],
+            "file:///elsewhere/X.cs": [diagnostic(5, 5, 3, None, "fyi")],
+            # Roslyn marks unnecessary usings in generated obj/ files as hints; they are counted, not listed.
+            "file:///obj/Generated.cs": [diagnostic(1, 0, 4, "CS8019", "Unnecessary using directive.")],
+        }, publishes=4)
+
+        result = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--root", str(self.root), "--count", "3"],
+                                capture_output=True, text=True, check=True)
+        with_hints = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--hints"],
+                                    capture_output=True, text=True, check=True)
+
+        self.assertIn("Files: 3  Errors: 1  Warnings: 2  Infos: 1  Hints: 1", result.stdout)
+        self.assertNotIn("CS8019", result.stdout)
+        self.assertIn("1 hint hidden; pass --hints to list", result.stdout)
+        self.assertIn("/obj/Generated.cs:2:1  hint  CS8019", with_hints.stdout)
+        self.assertIn("      2  warning  CS0219", result.stdout)
+        listed = section(result.stdout, "Diagnostics (errors first):")
+        self.assertEqual(listed[:3], [
+            "  a/Y.cs:1:1  error  CS0029  bad",
+            "  a/Y.cs:3:2  warning  CS0219  unused",
+            "  b/Z.cs:10:5  warning  CS0219  unused",
+        ])
+        self.assertIn("... 1 more; pass a larger count", result.stdout)
+
+    def test_waiting_reports_only_once_a_publish_passes_the_baseline(self):
+        store = self.root / "diagnostics.json"
+        self.write_store(store, {}, publishes=5)
+        timed_out = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--after", "5", "--timeout", "0.3"],
+                                   capture_output=True, text=True)
+        self.assertEqual(timed_out.returncode, 3, timed_out.stderr)
+        self.assertIn("No diagnostics were published within 0.3s.", timed_out.stdout)
+
+        self.write_store(store, {"file:///A.cs": [diagnostic(0, 0, 1, "CS1002", "; expected")]}, publishes=6)
+        done = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--after", "5", "--timeout", "0.3"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("CS1002", done.stdout)
+
+    def session(self, pid):
+        ws = self.root / "data/ws/sess-test"
+        ws.mkdir(parents=True)
+        (ws / "session.txt").write_text("test-session\n")
+        (ws / "workspace.txt").write_text(f"{self.root}\n")
+        (ws / "pid").write_text(f"{pid}\n")
+        (ws / "target.json").write_text("{}\n")
+        (ws / "load-completed").write_text("2026-09-13T18:00:00\n")
+        self.write_store(ws / "diagnostics.json", {}, publishes=2)
+        os.mkfifo(ws / "inject.fifo")
+        return ws
+
+    def run_driver(self, *args, **env):
+        env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(self.root / "data"), "DOTRUSH_SESSION_ID": "test-session",
+               "DOTRUSH_DIAGNOSTICS_QUIET": "0", "DOTRUSH_DIAGNOSTICS_TIMEOUT": "10", **env}
+        return subprocess.run(["bash", str(DIAGNOSTICS_SH), *args], capture_output=True, text=True, env=env, timeout=30)
+
+    def test_solution_injects_the_request_and_reports_what_the_server_publishes_next(self):
+        import threading
+
+        ws = self.session(os.getpid())
+        injected = []
+
+        def fake_proxy():
+            with open(ws / "inject.fifo") as fifo:
+                injected.append(fifo.readline().strip())
+            self.write_store(ws / "diagnostics.json", {(self.root / "A.cs").as_uri(): [diagnostic(4, 8, 1, "CS0029", "bad")]},
+                             publishes=3, updated=time.time())
+
+        reader = threading.Thread(target=fake_proxy)
+        reader.start()
+        result = self.run_driver("solution")
+        reader.join(5)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([json.loads(line) for line in injected], [{"method": "dotrush/solutionDiagnostics", "params": {}}])
+        self.assertIn("A.cs:5:9  error  CS0029  bad", result.stdout)
+
+    def test_solution_refuses_a_session_whose_proxy_is_gone_or_predates_capture(self):
+        ws = self.session(dead_pid())
+        gone = self.run_driver("solution")
+        self.assertNotEqual(gone.returncode, 0)
+        self.assertIn("is not running", gone.stderr)
+
+        (ws / "pid").write_text(f"{os.getpid()}\n")
+        (ws / "diagnostics.json").unlink()
+        older = self.run_driver("solution")
+        self.assertNotEqual(older.returncode, 0)
+        self.assertIn("predates diagnostics capture", older.stderr)
+
+    def test_solution_refuses_to_wait_on_a_server_that_never_completed_a_load(self):
+        # DotRush starts its analysis worker only after its first load completes, so the request would
+        # sit unanswered until the timeout.
+        ws = self.session(os.getpid())
+        (ws / "load-completed").unlink()
+
+        result = self.run_driver("solution")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has not finished loading a project", result.stderr)
+        self.assertIn("load: not completed", self.run_driver("where").stdout)
+
+    def test_without_a_session_dir_it_says_to_start_the_language_server(self):
+        result = self.run_driver("report")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no DotRush language server has started", result.stderr)
 
 if __name__ == "__main__":
     unittest.main()
