@@ -16,9 +16,24 @@ dotrush_fail() {
   exit 1
 }
 
+# Claude Code passes CLAUDE_PLUGIN_DATA to the language server through .lsp.json but does not set it
+# for the Bash commands a skill runs. Those find the same directory from where the plugin is
+# installed: <claude>/plugins/cache/<marketplace>/<plugin>/<version> keeps its data in
+# <claude>/plugins/data/<plugin>-<marketplace>. Anywhere else, such as a checkout, uses the user cache.
 dotrush_data_dir() {
+  local root plugin marketplace
   if [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]]; then
     printf '%s\n' "$CLAUDE_PLUGIN_DATA"
+    return
+  fi
+  root="$(cd "$DOTRUSH_LIB_DIR/.." && pwd)"
+  root="${root%/*}"
+  plugin="${root##*/}"
+  root="${root%/*}"
+  marketplace="${root##*/}"
+  root="${root%/*}"
+  if [[ "${root##*/}" == cache && "${root%/*}" == */plugins ]]; then
+    printf '%s/data/%s-%s\n' "${root%/*}" "$plugin" "$marketplace"
   else
     printf '%s\n' "${XDG_CACHE_HOME:-${HOME}/.cache}/dotrush-cc"
   fi

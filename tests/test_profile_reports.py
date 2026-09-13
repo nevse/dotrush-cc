@@ -710,6 +710,27 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.calls("git"), [])
         self.assertFalse((self.data / "server.lock").exists())
 
+    def test_skills_find_the_servers_data_dir_without_claude_plugin_data(self):
+        # Claude Code sets CLAUDE_PLUGIN_DATA for the language server but not for the Bash a skill
+        # runs. The profiling tools must still land beside the server, not in the user cache.
+        plugin = self.root / ".claude/plugins/cache/dotrush-cc/dotrush/0.5.0"
+        shutil.copytree(ROOT / "plugins/dotrush/scripts", plugin / "scripts")
+        without = {key: value for key, value in self.env.items() if key != "CLAUDE_PLUGIN_DATA"}
+
+        def data_dir(library, env):
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; dotrush_data_dir', "_", str(library)],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.strip()
+
+        installed = plugin / "scripts/dotrush-install.sh"
+        checkout = ROOT / "plugins/dotrush/scripts/dotrush-install.sh"
+        self.assertEqual(data_dir(installed, without), str(self.root / ".claude/plugins/data/dotrush-dotrush-cc"))
+        self.assertEqual(data_dir(checkout, without), str(self.root / ".cache/dotrush-cc"))
+        self.assertEqual(data_dir(installed, self.env), str(self.data))
+
     def test_proxy_runs_the_installer_only_for_a_missing_or_stale_server(self):
         installer = self.root / "installer.sh"
         calls = self.root / "installer.calls"

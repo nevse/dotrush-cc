@@ -210,6 +210,12 @@ Notes (learned while verifying this):
 
 ## Changelog
 
+### 0.5.1
+- The profiling skills now install their tools beside the language server. Claude Code passes
+  `CLAUDE_PLUGIN_DATA` to the server but not to the Bash commands a skill runs, so 0.5.0 put the tools in
+  `~/.cache/dotrush-cc` and `dotrush-profile.sh tools` reported the server as not installed. Without the
+  variable, the scripts now derive the plugin's data directory from where the plugin is installed.
+
 ### 0.5.0
 - DotRush is pinned in `dotrush-version.json` to one `ref`, a release tag or a commit. The language server and the
   profiling tools are installed from it the same way and from the same place: the release's server and diagnostics
