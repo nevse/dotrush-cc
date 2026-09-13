@@ -13,7 +13,7 @@ Control channel (newline-delimited JSON, one JSON-RPC message per line):
     echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$DOTRUSH_INJECT_FIFO"
 
 Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
-    DOTRUSH_REAL_BIN        explicit path to the DotRush executable (overrides discovery)
+    DOTRUSH_REAL_BIN        explicit DotRush server to run, DotRush.dll or a native launcher (overrides discovery)
     DOTRUSH_SERVER_DIR      dir the server lives in / is installed to
     DOTRUSH_INSTALL_SCRIPT  installer to run if the server is missing or not at the pinned ref
     DOTRUSH_REF             DotRush ref to require (default: "ref" in dotrush-version.json)
@@ -31,10 +31,10 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = "DotRush.exe" if os.name == "nt" else "DotRush"
 
 SERVER_DIR = os.environ.get("DOTRUSH_SERVER_DIR") or os.path.join(HERE, "..", "server")
-REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, EXE)
+# The LanguageServer bundle is framework-dependent and has no native launcher, only DotRush.dll.
+REAL_BIN = os.environ.get("DOTRUSH_REAL_BIN") or os.path.join(SERVER_DIR, "DotRush.dll")
 INSTALL_SCRIPT = os.environ.get("DOTRUSH_INSTALL_SCRIPT") or os.path.join(HERE, "..", "scripts", "install-dotrush.sh")
 PIN_FILE = os.path.join(HERE, "..", "dotrush-version.json")
 REF_MARKER = os.path.join(SERVER_DIR, ".dotrush-ref")
@@ -262,6 +262,17 @@ def ensure_server():
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 
+def server_command(path):
+    """The command that starts the server at path: a dll through the dotnet host, anything else as it is."""
+    if not path.endswith(".dll"):
+        return [path]
+    dotnet = shutil.which("dotnet")
+    if not dotnet and os.environ.get("DOTNET_ROOT"):
+        candidate = os.path.join(os.environ["DOTNET_ROOT"], "dotnet.exe" if os.name == "nt" else "dotnet")
+        dotnet = candidate if os.path.exists(candidate) else None
+    return [dotnet, path] if dotnet else None
+
+
 def _pid_alive(pid):
     try:
         os.kill(pid, 0)
@@ -359,13 +370,17 @@ def main():
         sys.stderr.write(
             "dotrush: DotRush server is not available and could not be installed.\n"
             f"  Expected at: {REAL_BIN}\n"
-            f"  Install manually: bash '{INSTALL_SCRIPT}' '{SERVER_DIR}'\n"
+            f"  Install manually: bash '{INSTALL_SCRIPT}' server '{SERVER_DIR}'\n"
         )
         sys.exit(127)
+    command = server_command(real)
+    if not command:
+        sys.stderr.write(f"dotrush: {real} runs on the dotnet host, and there is no dotnet on PATH or in DOTNET_ROOT.\n")
+        sys.exit(127)
 
-    log(f"proxy start: exec {real}")
+    log(f"proxy start: exec {' '.join(command)}")
     child = subprocess.Popen(
-        [real] + sys.argv[1:],
+        command + sys.argv[1:],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
     )
     startup_config_inject(child.stdin)  # push the persisted target before the client's traffic

@@ -3,7 +3,7 @@
 # component, the language server or the diagnostics tools, at the ref pinned in dotrush-version.json.
 #
 # Both components are installed the same way and, for one ref, from the same place: downloaded when
-# the ref is a release tag whose GitHub release ships a bundle of every component for this platform,
+# the ref is a release tag whose GitHub release ships a bundle of every component,
 # built from source at that ref otherwise. A commit, or a release missing any bundle, is built — a
 # downloaded server never sits beside diagnostics built from source.
 
@@ -69,33 +69,6 @@ dotrush_is_commit() {
   [[ "$1" =~ ^[0-9a-f]{40}$ ]]
 }
 
-dotrush_platform() {
-  local os arch
-  case "$(uname -s)" in
-    Darwin) os="darwin" ;;
-    Linux) os="linux" ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT) os="win32" ;;
-    *) dotrush_fail "no DotRush build for OS '$(uname -s)'" ;;
-  esac
-  case "$(uname -m)" in
-    arm64|aarch64) arch="arm64" ;;
-    x86_64|amd64) arch="x64" ;;
-    *) dotrush_fail "no DotRush build for architecture '$(uname -m)'" ;;
-  esac
-  printf '%s-%s\n' "$os" "$arch"
-}
-
-# The .NET runtime identifier of the platform the release bundles are named after.
-dotrush_rid() {
-  local platform
-  platform="$(dotrush_platform)" || exit 1
-  case "$platform" in
-    darwin-*) printf 'osx-%s\n' "${platform#darwin-}" ;;
-    win32-*) printf 'win-%s\n' "${platform#win32-}" ;;
-    *) printf '%s\n' "$platform" ;;
-  esac
-}
-
 dotrush_dotnet() {
   if [[ -n "${DOTRUSH_DOTNET:-}" ]]; then
     printf '%s\n' "$DOTRUSH_DOTNET"
@@ -108,15 +81,16 @@ dotrush_dotnet() {
   fi
 }
 
+# DotRush's build.cake `pack` step zips extension/bin/<module> into DotRush.Bundle.<module>.zip. The
+# bundles are platform-neutral: the server and the tools are framework-dependent and run through dotnet.
 dotrush_bundle_url() {
-  local component="$1" repo="$2" ref="$3" name platform
+  local component="$1" repo="$2" ref="$3" module
   case "$component" in
-    server) name="Server" ;;
-    diagnostics) name="Diagnostics" ;;
+    server) module="LanguageServer" ;;
+    diagnostics) module="Diagnostics" ;;
     *) dotrush_fail "unknown DotRush component '$component'" ;;
   esac
-  platform="$(dotrush_platform)" || exit 1
-  printf 'https://github.com/%s/releases/download/%s/DotRush.Bundle.%s_%s.zip\n' "$repo" "$ref" "$name" "$platform"
+  printf 'https://github.com/%s/releases/download/%s/DotRush.Bundle.%s.zip\n' "$repo" "$ref" "$module"
 }
 
 # Prints where every component at this ref comes from: "release" or "build". Only a missing bundle
@@ -142,7 +116,7 @@ dotrush_source() {
 
 dotrush_component_ready() {
   case "$1" in
-    server) [[ -f "$2/DotRush" || -f "$2/DotRush.exe" ]] ;;
+    server) [[ -f "$2/DotRush.dll" ]] ;;
     diagnostics) [[ -f "$2/dotnet-trace.dll" && -f "$2/dotnet-gcdump.dll" ]] ;;
     *) return 1 ;;
   esac
@@ -169,7 +143,7 @@ dotrush_fetch_release() {
 # the time `git submodule update --depth 1` did.
 dotrush_build_steps() {
   local component="$1" repo="$2" ref="$3" work="$4" out="$5"
-  local source="$4/source" submodule commit url tool rid dotnet
+  local source="$4/source" submodule commit url tool dotnet
   dotnet="$(dotrush_dotnet)" || return 1
   case "$component" in
     server) submodule="src/DotRush.LanguageServer.Framework" ;;
@@ -185,12 +159,9 @@ dotrush_build_steps() {
   git -C "$source/$submodule" checkout -q FETCH_HEAD || return 1
   case "$component" in
     server)
-      # The release's server bundle is this project published for one platform, framework-dependent,
-      # with its native DotRush launcher, plus the default config DotRush's repack step writes.
-      rid="$(dotrush_rid)" || return 1
+      # DotRush's server task: a plain Release publish, framework-dependent and without a launcher.
       "$dotnet" publish "$source/src/DotRush.Roslyn.Server/DotRush.Roslyn.Server.csproj" -c Release \
-        -r "$rid" --self-contained false -p:UseAppHost=true -o "$out" </dev/null || return 1
-      printf '%s\n' '{' '    "dotrush": {' '        "roslyn": { }' '    }' '}' > "$out/_dotrush.config.json"
+        -o "$out" </dev/null || return 1
       ;;
     diagnostics)
       for tool in dotnet-trace dotnet-gcdump; do
@@ -213,7 +184,7 @@ dotrush_install_locked() {
   else
     command -v git >/dev/null 2>&1 || dotrush_fail "building DotRush from source needs git"
     [[ -n "$("$(dotrush_dotnet)" --list-sdks 2>/dev/null)" ]] || dotrush_fail "building DotRush from source needs a .NET SDK"
-    echo "dotrush-install: DotRush $ref has no release bundles for this platform; building the $component from source (a few minutes, once per pinned ref)" >&2
+    echo "dotrush-install: DotRush $ref has no release bundles; building the $component from source (a few minutes, once per pinned ref)" >&2
     log="$(dirname "$target")/$component-build.log"
     if ! dotrush_build_steps "$component" "$repo" "$ref" "$staging.work" "$staging" > "$log" 2>&1 \
       || ! dotrush_component_ready "$component" "$staging"; then
@@ -223,7 +194,6 @@ dotrush_install_locked() {
     rm -f "$log"
   fi
   dotrush_component_ready "$component" "$staging" || dotrush_fail "the DotRush $component for $ref is missing its files"
-  [[ ! -f "$staging/DotRush" ]] || chmod +x "$staging/DotRush"
   printf '%s\n' "$ref" > "$staging/.dotrush-ref"
   printf '%s\n' "$origin" > "$staging/.dotrush-source"
   rm -rf "$target"

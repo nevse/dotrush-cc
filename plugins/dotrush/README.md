@@ -27,24 +27,25 @@ The DotRush version this plugin version uses is pinned in `dotrush-version.json`
 ```json
 {
   "repository": "JaneySprings/DotRush",
-  "ref": "b720de7ca8d44e125fd56bad860564bd48e31281"
+  "ref": "2026.09"
 }
 ```
 
 `ref` is a release tag or a full commit SHA. The language server and the profiling tools are both installed from
 it by `install-dotrush.sh`, the same way and from the same place:
 
-- a **release tag** whose GitHub release ships `DotRush.Bundle.Server_<os>-<arch>.zip` and
-  `DotRush.Bundle.Diagnostics_<os>-<arch>.zip`: both bundles are downloaded (`curl` + `unzip`);
+- a **release tag** whose GitHub release ships `DotRush.Bundle.LanguageServer.zip` and
+  `DotRush.Bundle.Diagnostics.zip`: both bundles are downloaded (`curl` + `unzip`);
 - **anything else**, a commit or a release missing either bundle: both are built from source at that ref (`git` +
-  a .NET 10 SDK, a few minutes per component). The server is `dotnet publish`ed for this platform,
-  framework-dependent with its `DotRush` launcher, as the release bundle is; the profiling tools are
-  `dotnet-trace` and `dotnet-gcdump` published from the diagnostics submodule.
+  a .NET 10 SDK, a few minutes per component). Both are `dotnet publish`ed as DotRush's `build.cake` does
+  before its `pack` step zips them into those bundles.
 
-The pin is currently a commit on DotRush `main` from 10 September 2026, nine commits after 2026.09: no release has
-`dotnet-gcdump --format Json` yet, and none ships a diagnostics bundle. Once one does, pin its tag.
+The pin is the 2026.09 release, republished on 13 September 2026 with both bundles and a `dotnet-gcdump` that has
+`--format Json`, so nothing is built.
 
-On C# LSP start the proxy compares `${CLAUDE_PLUGIN_DATA}/server/.dotrush-ref` with the pin. When the server is
+The bundles are platform-neutral and the server has no native launcher, so the proxy starts it as
+`dotnet DotRush.dll`, which needs a .NET 10 or newer runtime on `PATH` or in `DOTNET_ROOT`. On C# LSP start the
+proxy compares `${CLAUDE_PLUGIN_DATA}/server/.dotrush-ref` with the pin. When the server is
 missing or at another ref, it runs the installer, which prepares the new server beside the old one and swaps it in
 whole; if that fails, the previous server keeps running. A build makes that first start take minutes, so
 `.lsp.json` allows 15. Concurrent sessions wait for one install rather than repeating it, and a failed build keeps
@@ -55,8 +56,8 @@ Manual / re-install:
 bash "$PLUGIN/scripts/install-dotrush.sh" server "$DATA/server" --force
 bash "$PLUGIN/scripts/install-dotrush.sh" diagnostics "$DATA/diagnostics" --force
 ```
-Override the ref with `DOTRUSH_REF` and the repository with `DOTRUSH_REPO`, or point at an existing server binary
-with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp.json`); a server named by `DOTRUSH_REAL_BIN` is
+Override the ref with `DOTRUSH_REF` and the repository with `DOTRUSH_REPO`, or point at an existing server (`DotRush.dll` or a
+native launcher) with `DOTRUSH_REAL_BIN` (env, set in your Claude settings or `.lsp.json`); a server named by `DOTRUSH_REAL_BIN` is
 never installed over.
 
 ## Point DotRush at your project
@@ -209,6 +210,14 @@ Notes (learned while verifying this):
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
 
 ## Changelog
+
+### 0.5.2
+- DotRush is pinned to the 2026.09 release, republished with `DotRush.Bundle.LanguageServer.zip` and
+  `DotRush.Bundle.Diagnostics.zip`, so both components are downloaded instead of built. The installer looks for
+  those names; the release no longer ships per-platform server bundles.
+- The server bundle has no native launcher, so the proxy starts `DotRush.dll` through the `dotnet` host. A build
+  from source publishes the server the way DotRush's own `server` task does, without a runtime identifier or
+  `_dotrush.config.json`.
 
 ### 0.5.1
 - The profiling skills now install their tools beside the language server. Claude Code passes

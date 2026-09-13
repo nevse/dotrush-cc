@@ -13,7 +13,7 @@
 #   DOTRUSH_REF    DotRush release tag or full commit SHA (default: "ref" in dotrush-version.json)
 #   DOTRUSH_REPO   GitHub owner/repository (default: "repository" in dotrush-version.json)
 #
-# A release tag whose GitHub release ships the server and diagnostics bundles for this platform is
+# A release tag whose GitHub release ships the LanguageServer and Diagnostics bundles is
 # downloaded (needs curl and unzip); any other ref is built from source (needs git and a .NET SDK).
 # The logic lives in dotrush-install.sh, which the profiling helper shares.
 #

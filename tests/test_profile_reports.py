@@ -532,7 +532,7 @@ open(os.environ["STUB_LOG"], "a").write("curl " + " ".join(args) + "\n")
 if os.environ.get("STUB_OFFLINE"):
     sys.exit(6)
 url = args[-1]
-component = next((name for name in ("Server", "Diagnostics") if f"DotRush.Bundle.{name}_" in url), None)
+component = next((name for name in ("LanguageServer", "Diagnostics") if url.endswith(f"/DotRush.Bundle.{name}.zip")), None)
 if component is None or component not in os.environ.get("STUB_ASSETS", "").split():
     sys.exit(22)
 if "-fsIL" not in args and "-o" in args:
@@ -562,7 +562,7 @@ elif "publish" in args:
     out = args[args.index("-o") + 1]
     os.makedirs(out, exist_ok=True)
     project = os.path.basename(args[args.index("publish") + 1])
-    name = "DotRush" if project == "DotRush.Roslyn.Server.csproj" else project.replace(".csproj", ".dll")
+    name = "DotRush.dll" if project == "DotRush.Roslyn.Server.csproj" else project.replace(".csproj", ".dll")
     open(os.path.join(out, name), "w").close()
 elif "--help" in args and os.environ.get("STUB_JSON"):
     print("  --format <GCDump|Json>")
@@ -589,7 +589,7 @@ class InstallTests(unittest.TestCase):
             "CLAUDE_PLUGIN_DATA": str(self.data),
             "DOTRUSH_DOTNET": str(stubs / "dotnet"),
             "STUB_LOG": str(self.log),
-            "STUB_SERVER_ZIP": str(make_zip(self.root / "server.zip", "DotRush", "DotRush.dll", "_dotrush.config.json")),
+            "STUB_LANGUAGESERVER_ZIP": str(make_zip(self.root / "server.zip", "DotRush.dll", "DotRush.runtimeconfig.json")),
             "STUB_DIAGNOSTICS_ZIP": str(make_zip(self.root / "diagnostics.zip", "dotnet-trace.dll", "dotnet-gcdump.dll")),
         }
 
@@ -636,32 +636,32 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(any("diagnostics.git 89a1406c" in call for call in git), git)
         publishes = [call for call in self.calls("dotnet") if " publish " in call]
         self.assertEqual(len(publishes), 3)
-        # Published like the release's server bundle: for this platform, framework-dependent, with the
-        # native launcher, plus the default config DotRush's repack step writes.
-        self.assertIn("DotRush.Roslyn.Server.csproj -c Release -r ", publishes[0])
-        self.assertIn("--self-contained false -p:UseAppHost=true", publishes[0])
-        self.assertIn('"roslyn"', (self.data / "server" / "_dotrush.config.json").read_text())
+        # Published as DotRush's own server task does, which is what the LanguageServer bundle zips:
+        # no runtime identifier, no native launcher.
+        self.assertIn("src/DotRush.Roslyn.Server/DotRush.Roslyn.Server.csproj -c Release -o ", publishes[0])
+        self.assertNotIn(" -r ", publishes[0])
+        self.assertTrue((self.data / "server" / "DotRush.dll").exists())
         for tool, call in zip(("dotnet-trace", "dotnet-gcdump"), publishes[1:]):
             self.assertIn(f"src/DotRush.Debugging.Diagnostics/src/Tools/{tool}/{tool}.csproj", call)
 
     def test_a_release_with_every_bundle_is_downloaded_for_both_components(self):
         for component in ("server", "diagnostics"):
             with self.subTest(component=component):
-                result = self.install(component, DOTRUSH_REF="2026.10", STUB_ASSETS="Server Diagnostics")
+                result = self.install(component, DOTRUSH_REF="2026.10", STUB_ASSETS="LanguageServer Diagnostics")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.recorded(component), ("2026.10", "release"))
 
-        self.assertTrue((self.data / "server" / "DotRush").exists())
+        self.assertTrue((self.data / "server" / "DotRush.dll").exists())
         self.assertTrue((self.data / "diagnostics" / "dotnet-gcdump.dll").exists())
         self.assertEqual(self.calls("git"), [])
 
     def test_a_release_missing_either_bundle_is_built_for_both_components(self):
-        # 2026.09 ships a server bundle and no diagnostics bundle. Downloading one and building the
+        # A release with the server bundle and no diagnostics bundle. Downloading one and building the
         # other would put two differently produced halves of one version side by side.
-        result = self.install("server", DOTRUSH_REF="2026.09", STUB_ASSETS="Server")
+        result = self.install("server", DOTRUSH_REF="2026.10", STUB_ASSETS="LanguageServer")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.recorded("server"), ("2026.09", "build"))
+        self.assertEqual(self.recorded("server"), ("2026.10", "build"))
         downloads = [call for call in self.calls("curl") if "-fsIL" not in call]
         self.assertEqual(downloads, [])
 
@@ -674,7 +674,7 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
     def test_moving_the_pin_replaces_the_install_whole(self):
-        self.assertEqual(self.install("server", DOTRUSH_REF="2026.10", STUB_ASSETS="Server Diagnostics").returncode, 0)
+        self.assertEqual(self.install("server", DOTRUSH_REF="2026.10", STUB_ASSETS="LanguageServer Diagnostics").returncode, 0)
         (self.data / "server" / "left-by-2026.10.dll").write_text("")
         result = self.install("server", DOTRUSH_REF=COMMIT)
 
@@ -694,7 +694,7 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(lock.exists())
 
     def test_a_failed_build_keeps_the_previous_install_and_its_log(self):
-        self.assertEqual(self.install("server", DOTRUSH_REF="2026.10", STUB_ASSETS="Server Diagnostics").returncode, 0)
+        self.assertEqual(self.install("server", DOTRUSH_REF="2026.10", STUB_ASSETS="LanguageServer Diagnostics").returncode, 0)
         result = self.install("server", DOTRUSH_REF=COMMIT, STUB_BUILD_FAILS="1")
 
         self.assertNotEqual(result.returncode, 0)
@@ -753,12 +753,29 @@ class InstallTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-c", check], env=env, check=True, capture_output=True, text=True)
         self.assertEqual(calls.read_text().split(), ["server", str(server)])
         # The stub installer changed nothing, so the previous server is still what runs.
-        self.assertEqual(result.stdout.strip(), str(server / "DotRush"))
+        self.assertEqual(result.stdout.strip(), str(server / "DotRush.dll"))
+
+    def test_proxy_runs_the_server_dll_through_the_dotnet_host(self):
+        # The LanguageServer bundle has DotRush.dll and no native launcher; an explicit
+        # DOTRUSH_REAL_BIN launcher still runs as it is.
+        check = (
+            "import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
+            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
+            "print(proxy.server_command(sys.argv[1]))\n"
+        )
+        env = {**self.env, "DOTRUSH_PROXY_LOG": ""}
+        dotnet = self.env["DOTRUSH_DOTNET"]
+        dll = subprocess.run([sys.executable, "-c", check, "/srv/DotRush.dll"], env=env, check=True, capture_output=True, text=True)
+        launcher = subprocess.run([sys.executable, "-c", check, "/opt/DotRush"], env=env, check=True, capture_output=True, text=True)
+
+        self.assertEqual(dll.stdout.strip(), str([dotnet, "/srv/DotRush.dll"]))
+        self.assertEqual(launcher.stdout.strip(), str(["/opt/DotRush"]))
 
     def test_profiling_installs_diagnostics_like_the_server_and_drops_the_nuget_tools(self):
         legacy = self.data / "diagnostics-tools"
         legacy.mkdir(parents=True)
-        result = call_helper("resolve_bundle", env={**self.env, "DOTRUSH_REF": "2026.10", "STUB_ASSETS": "Server Diagnostics"})
+        result = call_helper("resolve_bundle", env={**self.env, "DOTRUSH_REF": "2026.10", "STUB_ASSETS": "LanguageServer Diagnostics"})
 
         self.assertEqual(result.stdout.strip(), str(self.data / "diagnostics"), result.stderr)
         self.assertEqual(self.recorded("diagnostics"), ("2026.10", "release"))
