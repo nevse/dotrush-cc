@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Runtime.Versioning;
 
 namespace DotRushCli;
 
@@ -15,6 +16,8 @@ public static class ExitCode
 public sealed record CommandContext(
     IReadOnlyDictionary<string, string?> Env, string Cwd, TextWriter Stdout, TextWriter Stderr);
 
+// The CLI drives a Unix FIFO and libc; it does not run on Windows.
+[UnsupportedOSPlatform("windows")]
 public static class Program
 {
     sealed record Command(string Name, string Synopsis, string Description, Func<CommandContext, string[], int> Handler);
@@ -27,6 +30,9 @@ public static class Program
         new("request", RequestCommand.Synopsis,
             "send an LSP request to this session's DotRush server and print its result as JSON (default timeout 60 s)",
             RequestCommand.Run),
+        new("rename", RenameCommand.PreviewSynopsis,
+            "ask DotRush to rename the symbol at a 1-based position; save the edits as a plan and print them with a diff",
+            RenameCommand.Run),
         new("help", "help", "print this help", (context, _) => PrintUsage(context.Stdout, ExitCode.Success)),
     ];
 

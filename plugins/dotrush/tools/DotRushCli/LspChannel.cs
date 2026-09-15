@@ -216,7 +216,7 @@ public sealed class LspChannel(SessionState session)
 public static class RequestCommand
 {
     public const string Synopsis = "request <method> <params-json> [--timeout N]";
-    static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
+    internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
     const double MaxTimeoutSeconds = 24 * 60 * 60;
 
     public static int Run(CommandContext context, string[] args)
@@ -255,10 +255,10 @@ public static class RequestCommand
 
     sealed record Arguments(string? Method, JsonNode? Parameters, TimeSpan? Timeout, string? Problem);
 
-    static Arguments Parse(string[] args)
+    // Moves every argument except `--timeout N` into positional and sets timeout from N; returns the problem with
+    // a malformed --timeout, or null.
+    internal static string? TakeTimeout(string[] args, List<string> positional, ref TimeSpan timeout)
     {
-        var positional = new List<string>();
-        var timeout = DefaultTimeout;
         for (var i = 0; i < args.Length; i++)
         {
             if (args[i] != "--timeout")
@@ -270,10 +270,21 @@ public static class RequestCommand
                 || !double.TryParse(args[i + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
                 || !(seconds > 0 && seconds <= MaxTimeoutSeconds))
             {
-                return new(null, null, null, "--timeout needs a number of seconds greater than 0");
+                return "--timeout needs a number of seconds greater than 0";
             }
             timeout = TimeSpan.FromSeconds(seconds);
             i++;
+        }
+        return null;
+    }
+
+    static Arguments Parse(string[] args)
+    {
+        var positional = new List<string>();
+        var timeout = DefaultTimeout;
+        if (TakeTimeout(args, positional, ref timeout) is { } problem)
+        {
+            return new(null, null, null, problem);
         }
         if (positional.Count != 2)
         {
