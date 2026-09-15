@@ -22,6 +22,8 @@ public static class Program
     // The usage table: every command the CLI accepts, in the order the usage text lists them.
     static readonly Command[] Commands =
     [
+        new("session", Session.Synopsis, "print this session's DotRush runtime dir and its state (--dir: the dir only)",
+            Session.Run),
         new("help", "help", "print this help", (context, _) => PrintUsage(context.Stdout, ExitCode.Success)),
     ];
 
