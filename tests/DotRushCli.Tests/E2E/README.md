@@ -34,7 +34,8 @@ data dir. It then:
 4. waits up to 180 s for the proxy to write `load-completed`.
 
 On teardown it closes the proxy's stdin, which stops DotRush, waits a few seconds, kills the process tree if
-anything is still running, and deletes the temp dir. Each test class using the fixture gets its own server.
+anything is still running, and deletes the temp dir. Each test class using the fixture gets its own server;
+`RenameE2ETests` changes the demo files on disk, so it starts a fresh server and project for every test.
 
 The wrapper test runs the real `plugins/dotrush/scripts/dotrush-cli.sh` with `CLAUDE_PLUGIN_DATA` set to the
 fixture's data dir, so the wrapper builds the CLI into that dir with the real SDK before running it.

@@ -13,26 +13,9 @@ public sealed partial class RequestChannelE2ETests(DotRushServerFixture server) 
     public async Task Request_hover_returns_the_servers_result_and_the_client_never_sees_the_response()
     {
         Assert.SkipUnless(DotRushServerFixture.Enabled, DotRushServerFixture.SkipReason);
-        // `public class Greeter` in Greeter.cs: line 2, the G at character 13 (0-based).
-        var hoverParams = new JsonObject
-        {
-            ["textDocument"] = new JsonObject { ["uri"] = DotRushServerFixture.Uri(server.GreeterPath) },
-            ["position"] = new JsonObject { ["line"] = 2, ["character"] = 13 },
-        }.ToJsonString();
-
-        // load-completed can come a moment before the semantic model answers, so give hover a few tries.
-        (int Exit, string Stdout, string Stderr) result = default;
-        var deadline = DateTime.UtcNow.AddSeconds(60);
-        do
-        {
-            result = server.RunCli("request", "textDocument/hover", hoverParams, "--timeout", "30");
-            if (result.Exit == 0 && result.Stdout.Contains("Greeter"))
-            {
-                break;
-            }
-            await Task.Delay(1000, TestContext.Current.CancellationToken);
-        }
-        while (DateTime.UtcNow < deadline);
+        // `public class Greeter` in Greeter.cs: line 2, the G at character 13 (0-based). load-completed can come a
+        // moment before the semantic model answers, so the fixture gives hover a few tries.
+        var result = await server.HoverAsync(server.GreeterPath, 2, 13, stdout => stdout.Contains("Greeter"));
 
         Assert.True(result.Exit == 0 && result.Stdout.Contains("Greeter"),
             $"exit {result.Exit}\nstdout: {result.Stdout}\nstderr: {result.Stderr}{server.Diagnostics()}");

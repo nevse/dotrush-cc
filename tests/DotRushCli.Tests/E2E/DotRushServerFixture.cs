@@ -146,6 +146,37 @@ public sealed class DotRushServerFixture : IAsyncLifetime
         return (exit, stdout.ToString(), stderr.ToString());
     }
 
+    // Runs the CLI until accept takes its result or the time is up, and returns the last result. Right after
+    // load-completed the semantic model can still be settling, and a request may briefly find no symbol.
+    public async Task<(int Exit, string Stdout, string Stderr)> RunCliUntilAsync(
+        Func<(int Exit, string Stdout, string Stderr), bool> accept, TimeSpan within, params string[] args)
+    {
+        var deadline = DateTime.UtcNow + within;
+        while (true)
+        {
+            var result = RunCli(args);
+            if (accept(result) || DateTime.UtcNow >= deadline)
+            {
+                return result;
+            }
+            await Task.Delay(1000, TestContext.Current.CancellationToken);
+        }
+    }
+
+    // textDocument/hover through the CLI's `request` at a 0-based position, retried until accept takes the result
+    // JSON (for up to 60 s).
+    public Task<(int Exit, string Stdout, string Stderr)> HoverAsync(
+        string path, int line, int character, Func<string, bool> accept)
+    {
+        var hoverParams = new JsonObject
+        {
+            ["textDocument"] = new JsonObject { ["uri"] = Uri(path) },
+            ["position"] = new JsonObject { ["line"] = line, ["character"] = character },
+        }.ToJsonString();
+        return RunCliUntilAsync(result => result.Exit == 0 && accept(result.Stdout), TimeSpan.FromSeconds(60),
+            "request", "textDocument/hover", hoverParams, "--timeout", "30");
+    }
+
     // The proxy's log and stderr, appended to a failure message.
     public string Diagnostics()
     {
