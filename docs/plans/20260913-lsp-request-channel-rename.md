@@ -297,13 +297,13 @@
 - Create: `plugins/dotrush/tools/DotRushCli/WorkspaceEditApplier.cs`
 - Create: `tests/DotRushCli.Tests/WorkspaceEditApplierTests.cs`
 
-- [ ] write failing tests for text application: several edits on one line; edits on different lines applied last-to-first; CRLF and LF files keep their endings; U+2028 counts as a line break; a position after a surrogate pair lands correctly; overlapping edits rejected
-- [ ] write failing tests for file handling: UTF-8 BOM preserved; invalid UTF-8 refused without writing; executable bit preserved; a symlinked file writes its target and keeps the link; a failure writing one temp file leaves every file untouched; a failing move reports changed and unchanged files
-- [ ] write failing tests for plans: save/load round trip; apply refuses when any file's sha256 changed and writes nothing; invalid plan id (`../x`) and unknown plan id → "preview again"; plan and diff deleted after a successful apply
-- [ ] write failing tests for paths and the guard: `file://` URI with a space and non-ASCII chars; a workspace reached through a symlink compares equal to its real path; files outside the root or under `obj`/`bin` refused without `--outside-workspace`, accepted with it
-- [ ] write failing tests for the diff: hunks with three context lines, merged overlapping hunks, relative paths in headers
-- [ ] implement `WorkspaceEditApplier` (decoding, position mapping, plan model, hash check, temp-then-move writes with mode and symlink handling, guard, diff)
-- [ ] run tests - C# and Python suites must pass before task 8
+- [x] write failing tests for text application: several edits on one line; edits on different lines applied last-to-first; CRLF and LF files keep their endings; U+2028 counts as a line break; a position after a surrogate pair lands correctly; overlapping edits rejected
+- [x] write failing tests for file handling: UTF-8 BOM preserved; invalid UTF-8 refused without writing; executable bit preserved; a symlinked file writes its target and keeps the link; a failure writing one temp file leaves every file untouched; a failing move reports changed and unchanged files
+- [x] write failing tests for plans: save/load round trip; apply refuses when any file's sha256 changed and writes nothing; invalid plan id (`../x`) and unknown plan id → "preview again"; plan and diff deleted after a successful apply
+- [x] write failing tests for paths and the guard: `file://` URI with a space and non-ASCII chars; a workspace reached through a symlink compares equal to its real path; files outside the root or under `obj`/`bin` refused without `--outside-workspace`, accepted with it
+- [x] write failing tests for the diff: hunks with three context lines, merged overlapping hunks, relative paths in headers
+- [x] implement `WorkspaceEditApplier` (decoding, position mapping, plan model, hash check, temp-then-move writes with mode and symlink handling, guard, diff)
+- [x] run tests - C# and Python suites must pass before task 8
 
 ### Task 8: Implement `rename preview`
 
