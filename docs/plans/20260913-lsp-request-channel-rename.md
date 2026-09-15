@@ -285,11 +285,11 @@
 - Create: `tests/DotRushCli.Tests/E2E/RequestChannelE2ETests.cs`
 - Create: `tests/DotRushCli.Tests/E2E/README.md`
 
-- [ ] write the fixture: skip unless `DOTRUSH_E2E=1`; create a demo project (class `Greeter` in `Greeter.cs`, used from `App.cs`) in a temp dir; start `lsp-proxy.py` with `DOTRUSH_REAL_BIN`, temp `DOTRUSH_DATA_DIR`, `DOTRUSH_SESSION_ID` and `target.json`; act as a minimal LSP client (initialize, initialized, answer server requests with `null`, record every frame); `didOpen` both source files; wait for `load-completed`
-- [ ] write e2e test: `request textDocument/hover` on `Greeter` returns a result mentioning it, and the fixture's client received no frame with a `dotrush-cc:` id
-- [ ] write e2e test through the real `dotrush-cli.sh` (real build into a temp data dir): `session` reports `proxy: running`, `load: completed`, `channel: available`
-- [ ] document how to run the e2e tests and their prerequisites (installed DotRush server, .NET 10 SDK) in `E2E/README.md`
-- [ ] run `DOTRUSH_E2E=1 dotnet test tests/DotRushCli.Tests --filter Category=E2E` and the unit suites - must pass before task 7
+- [x] write the fixture: skip unless `DOTRUSH_E2E=1`; create a demo project (class `Greeter` in `Greeter.cs`, used from `App.cs`) in a temp dir; start `lsp-proxy.py` with `DOTRUSH_REAL_BIN`, temp `DOTRUSH_DATA_DIR`, `DOTRUSH_SESSION_ID` and `target.json`; act as a minimal LSP client (initialize, initialized, answer server requests with `null`, record every frame); `didOpen` both source files; wait for `load-completed`
+- [x] write e2e test: `request textDocument/hover` on `Greeter` returns a result mentioning it, and the fixture's client received no frame with a `dotrush-cc:` id
+- [x] write e2e test through the real `dotrush-cli.sh` (real build into a temp data dir): `session` reports `proxy: running`, `load: completed`, `channel: available`
+- [x] document how to run the e2e tests and their prerequisites (installed DotRush server, .NET 10 SDK) in `E2E/README.md`
+- [x] run `DOTRUSH_E2E=1 dotnet test tests/DotRushCli.Tests --filter Category=E2E` and the unit suites - must pass before task 7
 
 ### Task 7: Implement the workspace edit applier
 

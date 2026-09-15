@@ -9,7 +9,7 @@ namespace DotRushCli.Tests;
 [UnsupportedOSPlatform("windows")]
 public sealed partial class WrapperTests : IDisposable
 {
-    static readonly string Checkout = FindCheckout();
+    internal static readonly string Checkout = FindCheckout();
 
     readonly DirectoryInfo root = Directory.CreateTempSubdirectory("dotrush-cli-wrapper-");
     readonly string plugin;
@@ -197,7 +197,7 @@ public sealed partial class WrapperTests : IDisposable
 
     // The test host's environment without anything that would point the wrapper at a data dir or a
     // build, and without the MSBuild variables `dotnet test` leaves behind for its child processes.
-    static Dictionary<string, string?> BaseEnvironment()
+    internal static Dictionary<string, string?> BaseEnvironment()
     {
         string[] dropped = ["CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "DOTRUSH_CLI_DIR", "DOTRUSH_DATA_DIR", "DOTRUSH_DOTNET"];
         var env = new Dictionary<string, string?>();
@@ -238,7 +238,7 @@ public sealed partial class WrapperTests : IDisposable
         return RunProcess(start, timeout ?? TimeSpan.FromSeconds(30));
     }
 
-    static (int Exit, string Stdout, string Stderr) RunProcess(ProcessStartInfo start, TimeSpan timeout)
+    internal static (int Exit, string Stdout, string Stderr) RunProcess(ProcessStartInfo start, TimeSpan timeout)
     {
         using var process = Process.Start(start)!;
         process.StandardInput.Close();
