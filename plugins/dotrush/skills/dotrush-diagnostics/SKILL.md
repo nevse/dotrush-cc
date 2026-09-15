@@ -21,6 +21,8 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    - `load: not completed` — DotRush has not finished its first project load, and it starts code analysis only after that; `solution` refuses to run. If a project was just chosen, wait for the load and re-check. If the project was switched with a `dotrush/reloadWorkspace` before any load completed, analysis will not start in this server: tell the user to restart Claude Code.
    - `target: none chosen` — DotRush may have loaded nothing. Run the `dotrush-pick-project` skill first unless the workspace holds a single solution or a `dotrush.config.json`.
    - `publishes: no capture (older proxy)` — the language server started before the plugin was updated. Tell the user to restart Claude Code; do not try to work around it.
+   - `channel: unavailable (older proxy)` — the proxy predates the request channel that plugin tools such as rename use. Diagnostics do not need it, so `solution` and `report` still work; mention a Claude Code restart only if the user also wants those tools.
+   - The first `where` (or any first use of the plugin's CLI) builds that CLI once per plugin version, which takes a few seconds and prints `building the DotRush CLI` on stderr.
 
 2. Run the analysis:
 
