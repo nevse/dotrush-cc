@@ -252,7 +252,51 @@ public sealed class RenameCommandTests : IDisposable
         AssertNothingSent();
     }
 
+    [Fact]
+    public void A_session_dir_without_a_workspace_fails_before_any_request()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        AnswerRequestsWith("\"result\":null");
+        File.Delete(Path.Combine(proxy.Dir, "workspace.txt"));
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, "", $"dotrush-cli: the session dir {proxy.Dir} does not record its workspace; restart Claude Code\n"), result);
+        AssertNothingSent();
+    }
+
+    [Fact]
+    public void A_preview_that_cannot_write_to_the_fifo_fails_and_saves_no_plan()
+    {
+        using var gone = new FakeProxy(withReader: false);
+        var greeter = Path.Combine(gone.Workspace, "Greeter.cs");
+        File.WriteAllText(greeter, GreeterText);
+        File.Delete(gone.Fifo);
+
+        var result = gone.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.StartsWith($"dotrush-cli: cannot write to the proxy's FIFO {gone.Fifo}: ", result.Stderr);
+        Assert.False(Directory.Exists(Path.Combine(gone.Dir, "edits")));
+    }
+
     // --- responses ---
+
+    [Theory]
+    [InlineData("[null]")]
+    [InlineData("[{\"range\":1,\"newText\":\"Welcomer\"}]")]
+    [InlineData("[{\"range\":{\"start\":{\"line\":2,\"character\":13},\"end\":{\"line\":2,\"character\":20}}}]")]
+    public void A_rename_result_that_cannot_be_read_is_an_error(string edits)
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        AnswerRequestsWith($"\"result\":{{\"changes\":{{\"{UriOf(greeter)}\":{edits}}}}}");
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.StartsWith("dotrush-cli: DotRush returned a rename result that cannot be read: ", result.Stderr);
+        Assert.Empty(SavedPlans());
+    }
 
     [Fact]
     public void Edits_are_saved_as_a_plan_and_summarised()
@@ -801,6 +845,44 @@ public sealed class RenameCommandTests : IDisposable
         Assert.Equal(GreeterText, File.ReadAllText(greeter));
         AssertDidOpen(UriOf(app), Assert.Single(WaitForDidOpens(1)));
         Assert.True(PlanExists(planId));
+    }
+
+    [Fact]
+    public void A_failing_move_whose_didOpen_cannot_be_written_reports_both()
+    {
+        using var deaf = new FakeProxy(withReader: false);
+        var app = Path.Combine(deaf.Workspace, "App.cs");
+        var greeter = Path.Combine(deaf.Workspace, "Greeter.cs");
+        File.WriteAllText(app, AppText);
+        File.WriteAllText(greeter, GreeterText);
+        var preview = WorkspaceEditApplier.Preview(deaf.Workspace, "Greeter", "Welcomer",
+            new Dictionary<string, IReadOnlyList<LspTextEdit>>
+            {
+                [UriOf(app)] = [new(new(new(4, 38), new(4, 45)), "Welcomer")],
+                [UriOf(greeter)] = [new(new(new(2, 13), new(2, 20)), "Welcomer")],
+            });
+        var planId = WorkspaceEditApplier.SavePlan(deaf.Dir, preview);
+        var realGreeter = Posix.RealPath(greeter)!;
+        var applier = new WorkspaceEditApplier(moveFile: (from, to) =>
+        {
+            if (to == realGreeter)
+            {
+                throw new IOException("permission denied");
+            }
+            File.Move(from, to, overwrite: true);
+        });
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = RenameCommand.Run(new CommandContext(deaf.Env(), deaf.Workspace, stdout, stderr), ["apply", planId], applier);
+
+        Assert.Equal((1, ""), (exit, stdout.ToString()));
+        var lines = stderr.ToString().TrimEnd('\n').Split('\n');
+        Assert.Equal(2, lines.Length);
+        Assert.Contains($"changed: {Posix.RealPath(app)}; unchanged: {realGreeter}", lines[0]);
+        Assert.StartsWith("dotrush-cli: the files were changed, but DotRush was not told to re-read them (cannot write to the proxy's FIFO", lines[1]);
+        Assert.Equal(AppText.Replace("new Greeter()", "new Welcomer()", StringComparison.Ordinal), File.ReadAllText(app));
+        Assert.Equal(GreeterText, File.ReadAllText(greeter));
     }
 
     [Fact]

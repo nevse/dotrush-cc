@@ -125,6 +125,24 @@ public sealed class WorkspaceEditApplierTests : IDisposable
         Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", Edit(0, 0, 0, 9, "x")));
     }
 
+    [Fact]
+    public void A_range_that_ends_before_it_starts_is_rejected()
+    {
+        var error = Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", Edit(0, 5, 0, 2, "x")));
+
+        Assert.Equal("the range 0:5-0:2 in Test.cs ends before it starts", error.Message);
+    }
+
+    [Fact]
+    public void New_text_that_is_not_valid_unicode_is_refused()
+    {
+        var document = SourceDocument.FromBytes("Test.cs", "Greeter\n"u8.ToArray());
+
+        var error = Assert.Throws<WorkspaceEditException>(() => document.Encode("\ud800 lone surrogate"));
+
+        Assert.Equal("the new text for Test.cs is not valid Unicode", error.Message);
+    }
+
     // --- file handling ---
 
     [Fact]
@@ -310,6 +328,39 @@ public sealed class WorkspaceEditApplierTests : IDisposable
     }
 
     [Fact]
+    public void Apply_refuses_when_a_file_was_deleted_since_preview_and_writes_nothing()
+    {
+        var a = WriteFile("A.cs", "class Greeter {}\n");
+        var b = WriteFile("B.cs", "Greeter g;\n");
+        var id = Save(Preview((a, [RenameAt(0, 6)]), (b, [RenameAt(0)])));
+        File.Delete(b);
+
+        var error = Assert.Throws<WorkspaceEditException>(() =>
+            new WorkspaceEditApplier().Apply(session, id, allowOutsideWorkspace: false));
+
+        Assert.Equal($"{b} changed since preview; run rename preview again", error.Message);
+        Assert.Equal("class Greeter {}\n", File.ReadAllText(a));
+        Assert.Empty(Temps());
+    }
+
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("null")]
+    [InlineData("""{"workspace":"/w","oldName":"a","newName":"b","changes":{"/w/A.cs":[]},"files":{}}""")]
+    [InlineData("""{"workspace":"/w","oldName":"a","changes":{},"files":{}}""")]
+    public void A_plan_file_that_cannot_be_read_asks_to_preview_again(string content)
+    {
+        const string id = "0123456789ab";
+        Directory.CreateDirectory(Path.Combine(session, "edits"));
+        File.WriteAllText(Path.Combine(session, "edits", id + ".json"), content);
+
+        var error = Assert.Throws<WorkspaceEditException>(() =>
+            new WorkspaceEditApplier().Apply(session, id, allowOutsideWorkspace: false));
+
+        Assert.Equal($"plan '{id}' cannot be read; run rename preview again", error.Message);
+    }
+
+    [Fact]
     public void A_successful_apply_deletes_the_plan_and_its_diff_and_returns_the_changed_files()
     {
         var a = WriteFile("A.cs", "class Greeter {}\n");
@@ -342,6 +393,38 @@ public sealed class WorkspaceEditApplierTests : IDisposable
         Assert.Equal("My Dir/Grüße.cs", file.RelativePath);
         Assert.Equal(["Greeter"], file.RangeTexts);
         Assert.Equal("class Welcomer {}\n", File.ReadAllText(path));
+    }
+
+    [Theory]
+    [InlineData("https://example.com/Greeter.cs")]
+    [InlineData("Greeter.cs")]
+    public void A_uri_that_is_not_a_file_uri_is_refused(string uri)
+    {
+        var error = Assert.Throws<WorkspaceEditException>(() => WorkspaceEditApplier.ResolveUri(uri));
+
+        Assert.Equal($"{uri} is not a file URI", error.Message);
+    }
+
+    [Fact]
+    public void A_file_uri_for_a_missing_file_is_refused()
+    {
+        var missing = Path.Combine(workspace, "Missing.cs");
+
+        var error = Assert.Throws<WorkspaceEditException>(() => WorkspaceEditApplier.ResolveUri(UriOf(missing)));
+
+        Assert.Equal($"{missing} does not exist", error.Message);
+    }
+
+    [Fact]
+    public void A_preview_for_a_missing_workspace_is_refused()
+    {
+        var path = WriteFile("Greeter.cs", "class Greeter {}\n");
+        var gone = Path.Combine(root, "gone");
+
+        var error = Assert.Throws<WorkspaceEditException>(() =>
+            WorkspaceEditApplier.Preview(gone, "Greeter", "Welcomer", Changes((path, [RenameAt(0, 6)]))));
+
+        Assert.Equal($"the workspace {gone} does not exist", error.Message);
     }
 
     [Fact]

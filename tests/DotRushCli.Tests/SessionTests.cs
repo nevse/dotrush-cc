@@ -268,6 +268,18 @@ public sealed class SessionTests : IDisposable
             """, ""), result);
     }
 
+    [Fact]
+    public void Session_reports_unknown_publishes_for_an_unreadable_diagnostics_file()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid,
+            Diagnostics: "{not json"));
+
+        var result = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Contains("\npublishes: unknown\n", result.Stdout);
+    }
+
     // --- channel readiness -----------------------------------------------------------------------
 
     (int Exit, SessionState? Session, string Stderr) RequireChannel(Dictionary<string, string?> env)

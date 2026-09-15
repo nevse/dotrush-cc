@@ -357,11 +357,15 @@
 - [x] run tests - C# and Python suites must pass before task 12
 
 ### Task 12: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (channel, CLI commands, rename skill, shared lookup)
-- [ ] verify edge cases are handled (0.6.x proxy for diagnostics, older proxy for the channel, load not completed, timeout + cancel, differs from disk, hash mismatch, outside workspace, BOM/CRLF/UTF-16/file mode, foreign `global.json`, missing `CLAUDE_PLUGIN_DATA`)
-- [ ] run full test suite: `python3 -m unittest tests.test_profile_reports` and `dotnet test tests/DotRushCli.Tests`
-- [ ] run e2e tests: `DOTRUSH_E2E=1 dotnet test tests/DotRushCli.Tests --filter Category=E2E`
-- [ ] verify every new C# class and every CLI error path has at least one test
+- [x] verify all requirements from Overview are implemented (channel, CLI commands, rename skill, shared lookup)
+- [x] verify edge cases are handled (0.6.x proxy for diagnostics, older proxy for the channel, load not completed, timeout + cancel, differs from disk, hash mismatch, outside workspace, BOM/CRLF/UTF-16/file mode, foreign `global.json`, missing `CLAUDE_PLUGIN_DATA`)
+- [x] run full test suite: `python3 -m unittest tests.test_profile_reports` and `dotnet test tests/DotRushCli.Tests`
+- [x] run e2e tests: `DOTRUSH_E2E=1 dotnet test tests/DotRushCli.Tests --filter Category=E2E`
+- [x] verify every new C# class and every CLI error path has at least one test
+- [x] ➕ add tests for untested `request` error paths: a response file that is not valid JSON, not an object, or has a non-object / empty `error`; a missing FIFO (`cannot write to the proxy's FIFO <path>: …`); `--timeout` above the 24 h cap
+- [x] ➕ add tests for untested `rename` error paths: a session dir without `workspace.txt`; a preview that cannot write to the FIFO; a rename result that cannot be read (null edit, wrong type, missing `newText`); a failing move whose `didOpen` also cannot be written (both messages)
+- [x] ➕ add tests for untested `WorkspaceEditApplier` error paths: reversed range, new text that is not valid Unicode, a file deleted since preview, an unreadable plan file (bad JSON, `null`, a changed file without a hash, a missing field), a non-file URI, a file URI for a missing file, a missing workspace
+- [x] ➕ add a test that `session` prints `publishes: unknown` for an unreadable `diagnostics.json`
 
 ### Task 13: [Final] Update documentation
 - [ ] update `plugins/dotrush/README.md`: Contents table (CLI, wrapper, rename skill); a "Semantic rename" section; the request channel under "Injecting custom LSP messages", replacing the warning that injected requests' responses go to Claude Code; Requirements note that the SDK also builds the CLI on first use

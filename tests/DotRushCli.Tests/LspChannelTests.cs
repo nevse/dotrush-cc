@@ -128,6 +128,7 @@ public sealed class LspChannelTests : IDisposable
     [InlineData("textDocument/hover|{}|--timeout")]
     [InlineData("textDocument/hover|{}|--timeout|0")]
     [InlineData("textDocument/hover|{}|--timeout|soon")]
+    [InlineData("textDocument/hover|{}|--timeout|100000")]
     [InlineData("|{}")]
     public void Malformed_request_arguments_are_a_usage_error(string joinedArgs)
     {
@@ -183,6 +184,40 @@ public sealed class LspChannelTests : IDisposable
             result);
         Thread.Sleep(100);
         Assert.Empty(proxy.Lines);
+    }
+
+    [Theory]
+    [InlineData("not json", "dotrush-cli: the response is not valid JSON: ")]
+    [InlineData("[1]", "dotrush-cli: the response is not a JSON-RPC message\n")]
+    [InlineData("""{"jsonrpc":"2.0","error":"boom"}""", "dotrush-cli: \"boom\"\n")]
+    [InlineData("""{"jsonrpc":"2.0","error":{}}""", "dotrush-cli: unknown: \n")]
+    public void A_response_that_is_not_a_json_rpc_result_is_an_error(string body, string expectedStderr)
+    {
+        proxy.OnMessage = (fake, message) =>
+        {
+            if (message["id"] is not null)
+            {
+                fake.RespondWithBody(IdOf(message), body);
+            }
+        };
+
+        var result = proxy.Run("request", "textDocument/hover", HoverParams);
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.StartsWith(expectedStderr, result.Stderr);
+        Assert.Empty(Directory.GetFileSystemEntries(proxy.ResponsesDir));
+    }
+
+    [Fact]
+    public void A_missing_fifo_fails_with_the_reason()
+    {
+        using var gone = new FakeProxy(withReader: false);
+        File.Delete(gone.Fifo);
+
+        var result = gone.Run("request", "textDocument/hover", HoverParams);
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.StartsWith($"dotrush-cli: cannot write to the proxy's FIFO {gone.Fifo}: ", result.Stderr);
     }
 
     [Fact]
