@@ -1,0 +1,3 @@
+<!-- Intentionally empty: stops MSBuild importing a Directory.Build.targets from the user's parent directories. -->
+<Project>
+</Project>

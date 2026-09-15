@@ -14,6 +14,12 @@ proxy.log
 __pycache__/
 *.pyc
 
+# .NET build output of the CLI (the plugin builds it into its data dir) and its tests
+plugins/dotrush/tools/**/bin/
+plugins/dotrush/tools/**/obj/
+tests/DotRushCli.Tests/bin/
+tests/DotRushCli.Tests/obj/
+
 # Profiling artifacts, if someone points --output back into the repo
 dotrush-profiles/
 

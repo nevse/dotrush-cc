@@ -226,13 +226,13 @@
 - Create: `tests/DotRushCli.Tests/WrapperTests.cs`
 - Modify: `.gitignore`
 
-- [ ] write failing xUnit tests through `Program.Run`: no arguments and an unknown command print usage to stderr and return 2
-- [ ] write failing `WrapperTests` (copied plugin tree under a fake `.claude/plugins/cache/dotrush-cc/dotrush/0.7.0`, stub `dotnet` script via `DOTRUSH_DOTNET` that records calls and fakes `build`): first run builds into `<derived data dir>/cli/<hash>/` **without `CLAUDE_PLUGIN_DATA` set**; a second run does not build; changing a copied source builds a new hash dir; a failing build prints the log tail, exits 1 and leaves no hash dir; `DOTRUSH_CLI_DIR` skips building; the build runs with cwd `tools/`
-- [ ] write failing real-SDK wrapper test: run from a directory whose `global.json` pins a missing SDK; the build succeeds and leaves no `bin/` or `obj/` inside the copied `tools/` tree
-- [ ] create the empty `Directory.*` files, `DotRushCli.csproj` (`net10.0`, Nullable, ImplicitUsings, InvariantGlobalization, no packages) and `Program.cs` with `Run(...)`, command dispatch, usage text and exit codes
-- [ ] create `dotrush-cli.sh` per Technical Details, reusing `dotrush-install.sh` helpers
-- [ ] create the xUnit v3 test project referencing `DotRushCli.csproj`; add `.gitignore` entries scoped to `plugins/dotrush/tools/**/bin/`, `plugins/dotrush/tools/**/obj/`, `tests/DotRushCli.Tests/bin/`, `tests/DotRushCli.Tests/obj/`
-- [ ] run tests - `dotnet test tests/DotRushCli.Tests` and the Python suite must pass before task 3
+- [x] write failing xUnit tests through `Program.Run`: no arguments and an unknown command print usage to stderr and return 2
+- [x] write failing `WrapperTests` (copied plugin tree under a fake `.claude/plugins/cache/dotrush-cc/dotrush/0.7.0`, stub `dotnet` script via `DOTRUSH_DOTNET` that records calls and fakes `build`): first run builds into `<derived data dir>/cli/<hash>/` **without `CLAUDE_PLUGIN_DATA` set**; a second run does not build; changing a copied source builds a new hash dir; a failing build prints the log tail, exits 1 and leaves no hash dir; `DOTRUSH_CLI_DIR` skips building; the build runs with cwd `tools/`
+- [x] write failing real-SDK wrapper test: run from a directory whose `global.json` pins a missing SDK; the build succeeds and leaves no `bin/` or `obj/` inside the copied `tools/` tree
+- [x] create the empty `Directory.*` files, `DotRushCli.csproj` (`net10.0`, Nullable, ImplicitUsings, InvariantGlobalization, no packages) and `Program.cs` with `Run(...)`, command dispatch, usage text and exit codes
+- [x] create `dotrush-cli.sh` per Technical Details, reusing `dotrush-install.sh` helpers
+- [x] create the xUnit v3 test project referencing `DotRushCli.csproj`; add `.gitignore` entries scoped to `plugins/dotrush/tools/**/bin/`, `plugins/dotrush/tools/**/obj/`, `tests/DotRushCli.Tests/bin/`, `tests/DotRushCli.Tests/obj/`
+- [x] run tests - `dotnet test tests/DotRushCli.Tests` and the Python suite must pass before task 3
 
 ### Task 3: Implement session lookup and the `session` command
 
