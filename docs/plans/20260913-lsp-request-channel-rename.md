@@ -368,11 +368,11 @@
 - [x] ➕ add a test that `session` prints `publishes: unknown` for an unreadable `diagnostics.json`
 
 ### Task 13: [Final] Update documentation
-- [ ] update `plugins/dotrush/README.md`: Contents table (CLI, wrapper, rename skill); a "Semantic rename" section; the request channel under "Injecting custom LSP messages", replacing the warning that injected requests' responses go to Claude Code; Requirements note that the SDK also builds the CLI on first use
-- [ ] update root `README.md`: a rename usage example, the file tree, and the Requirements note
-- [ ] add a 0.7.0 entry to `plugins/dotrush/CHANGELOG.md` (including the narrowed session-lookup fallback) and set `version` to 0.7.0 in `plugins/dotrush/.claude-plugin/plugin.json`; mention rename in the `plugin.json` and `.claude-plugin/marketplace.json` descriptions and keywords
-- [ ] update CLAUDE.md if new patterns discovered (the repo has none today; create only if there is something non-obvious to record)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `plugins/dotrush/README.md`: Contents table (CLI, wrapper, rename skill); a "Semantic rename" section; the request channel under "Injecting custom LSP messages", replacing the warning that injected requests' responses go to Claude Code; Requirements note that the SDK also builds the CLI on first use
+- [x] update root `README.md`: a rename usage example, the file tree, and the Requirements note
+- [x] add a 0.7.0 entry to `plugins/dotrush/CHANGELOG.md` (including the narrowed session-lookup fallback) and set `version` to 0.7.0 in `plugins/dotrush/.claude-plugin/plugin.json`; mention rename in the `plugin.json` and `.claude-plugin/marketplace.json` descriptions and keywords
+- [x] update CLAUDE.md if new patterns discovered (the repo has none today; create only if there is something non-obvious to record)
+- [x] move this plan to `docs/plans/completed/` (skipped - the harness moves the plan after all phases finish)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

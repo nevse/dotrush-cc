@@ -1,5 +1,29 @@
 # Changelog
 
+### 0.7.0
+- Added `dotrush-rename`, a semantic rename of a C# symbol across the loaded solution through DotRush's Roslyn
+  rename. Claude locates the symbol with the `LSP` tool, runs `rename preview`, shows the per-file edit counts and
+  the diff, and runs `rename apply` only after you confirm. Apply writes every file or none, keeps BOM, line endings
+  and file mode, refuses when a file changed since the preview, and sends `textDocument/didOpen` for each changed
+  file so DotRush re-reads it from disk. Files outside the workspace or under `bin`/`obj` need
+  `--outside-workspace`. Overloads, strings, comments and file names are not renamed.
+- The proxy has a request channel: a response whose id is `dotrush-cc:<uuid>` goes to `responses/<uuid>.json` in
+  the session dir instead of to Claude Code, and an id with a non-uuid suffix is dropped. `responses/` is created
+  empty at proxy start and marks a proxy with the channel; `edits/`, where rename plans are saved, is cleared at
+  start, so a server restart discards unapplied plans. Plain FIFO injection of notifications is unchanged.
+- Added a C# CLI, `tools/DotRushCli`, run through `scripts/dotrush-cli.sh`: `session [--dir]`,
+  `request <method> <params-json> [--timeout N]`, `rename preview <file> <line> <column> <NewName> [--timeout N]`
+  and `rename apply <plan-id> [--outside-workspace]`. Exit status 0 success, 1 error, 2 usage, 3 timeout; a request
+  that times out is cancelled with `$/cancelRequest`. The wrapper builds the CLI on first use with the .NET 10 SDK
+  into `${CLAUDE_PLUGIN_DATA}/cli/<source-hash>/`, one build per plugin version, from `tools/` so a repository's
+  `global.json` or `Directory.Build.*` does not affect it. `DOTRUSH_CLI_DIR` runs a ready build instead.
+- `dotrush-diagnostics.sh` and `dotrush-pick-project` find the session dir with `dotrush-cli.sh session --dir`.
+  The fallback without a matching session id now considers only per-workspace dirs, so it no longer takes another
+  session's `sess-*` dir recorded for the same workspace, and it resolves symlinked paths. `dotrush-pick-project`
+  looks only in this plugin's data dir rather than in every plugin's. `where` prints the CLI's `session` output,
+  which adds a `channel:` line. Readiness checks and their messages are unchanged, including against 0.6.x
+  proxies; the lookup's error is now prefixed `dotrush-cli:`.
+
 ### 0.6.1
 - Corrected the 0.6.0 claim that Claude Code does not show the model diagnostics published outside an edit. Checked
   in a live session: after a solution run it surfaced diagnostics for a file it had never opened, but only the ones
