@@ -350,11 +350,11 @@
 - Create: `plugins/dotrush/skills/dotrush-rename/SKILL.md`
 - Create: `tests/DotRushCli.Tests/SkillCommandTests.cs`
 
-- [ ] write failing `SkillCommandTests`: extract every `dotrush-cli.sh <subcommand> …` line from all `plugins/dotrush/skills/*/SKILL.md` files and assert each subcommand and flag exists in `Program`'s usage table
-- [ ] write the skill: when to use (rename a C# symbol across the solution); locate the position with LSP `documentSymbol`/`workspaceSymbol`; run `rename preview`; show the user the summary and diff (point to the `.diff` file when truncated); run `rename apply` only after confirmation; re-read changed files before further edits
-- [ ] document each error and what to tell the user: no session, older proxy, load not completed, position not on an identifier, no symbol, differs from disk, changed since preview, outside workspace, timeout
-- [ ] document limits: no overloads, strings, comments or file renames (report when a class lives in a same-named file); only documents in loaded projects
-- [ ] run tests - C# and Python suites must pass before task 12
+- [x] write failing `SkillCommandTests`: extract every `dotrush-cli.sh <subcommand> …` line from all `plugins/dotrush/skills/*/SKILL.md` files and assert each subcommand and flag exists in `Program`'s usage table
+- [x] write the skill: when to use (rename a C# symbol across the solution); locate the position with LSP `documentSymbol`/`workspaceSymbol`; run `rename preview`; show the user the summary and diff (point to the `.diff` file when truncated); run `rename apply` only after confirmation; re-read changed files before further edits
+- [x] document each error and what to tell the user: no session, older proxy, load not completed, position not on an identifier, no symbol, differs from disk, changed since preview, outside workspace, timeout
+- [x] document limits: no overloads, strings, comments or file renames (report when a class lives in a same-named file); only documents in loaded projects
+- [x] run tests - C# and Python suites must pass before task 12
 
 ### Task 12: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (channel, CLI commands, rename skill, shared lookup)
