@@ -205,12 +205,12 @@
 - Modify: `plugins/dotrush/bin/lsp-proxy.py`
 - Modify: `tests/test_profile_reports.py`
 
-- [ ] write failing tests: a `dotrush-cc:<uuid>` response is absent from the forwarded stdout and present in `responses/<uuid>.json`; an integer-id response, an unprefixed string id, an integer-id response whose result text contains `dotrush-cc:`, and an unparseable frame containing `dotrush-cc:` are all forwarded verbatim
-- [ ] write failing tests: a `dotrush-cc:` id with a non-uuid suffix (`../x`, empty) is neither forwarded nor written
-- [ ] write failing test: workspace dir setup creates an empty `responses/` (removing stale files) and removes `edits/`
-- [ ] implement routing in `pump_server_to_client` with an atomic write helper
-- [ ] implement `responses/` / `edits/` preparation in `ensure_workspace_dir`
-- [ ] run tests - `python3 -m unittest tests.test_profile_reports` must pass before task 2
+- [x] write failing tests: a `dotrush-cc:<uuid>` response is absent from the forwarded stdout and present in `responses/<uuid>.json`; an integer-id response, an unprefixed string id, an integer-id response whose result text contains `dotrush-cc:`, and an unparseable frame containing `dotrush-cc:` are all forwarded verbatim
+- [x] write failing tests: a `dotrush-cc:` id with a non-uuid suffix (`../x`, empty) is neither forwarded nor written
+- [x] write failing test: workspace dir setup creates an empty `responses/` (removing stale files) and removes `edits/`
+- [x] implement routing in `pump_server_to_client` with an atomic write helper
+- [x] implement `responses/` / `edits/` preparation in `ensure_workspace_dir`
+- [x] run tests - `python3 -m unittest tests.test_profile_reports` must pass before task 2
 
 ### Task 2: Create the CLI project, test project and build wrapper
 

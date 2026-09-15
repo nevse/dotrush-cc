@@ -24,6 +24,7 @@ Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,13 @@ DIAGNOSTICS_FILE = os.environ.get("DOTRUSH_DIAGNOSTICS_FILE") or os.path.join(WS
 # first project: a dotrush/reloadWorkspace then races that load, and DotRush either never starts code
 # analysis or loads the project twice and reports every diagnostic twice.
 LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
+# Request channel: plugin tooling injects requests whose id is "dotrush-cc:<uuid>", and the responses land
+# here as <uuid>.json instead of reaching Claude Code. The dir existing tells tooling the channel is available.
+RESPONSES_DIR = os.path.join(WS_DIR, "responses")
+RESPONSE_ID_PREFIX = "dotrush-cc:"
+RESPONSE_ID_SUFFIX = re.compile(r"[0-9a-f-]{36}")
+# Rename plans saved by the CLI; they describe files as this server saw them, so a new server drops them.
+EDITS_DIR = os.path.join(WS_DIR, "edits")
 
 _log_lock = threading.Lock()
 _stdin_lock = threading.Lock()  # serializes writes into DotRush's stdin
@@ -224,6 +232,9 @@ def pump_server_to_client(child_stdout, diagnostics=None):
             log("server stdout EOF")
             return
         header, body = f
+        # The substring test keeps every other frame from being parsed here.
+        if b'"dotrush-cc:' in body and route_response(body):
+            continue
         os.write(1, header + body)
         # The substring test keeps large responses from being parsed a second time.
         if diagnostics is not None and b'"textDocument/publishDiagnostics"' in body:
@@ -233,6 +244,38 @@ def pump_server_to_client(child_stdout, diagnostics=None):
             mark_load_completed()
         if not b.startswith("response"):
             log(f"S->C {b}")
+
+
+def write_atomically(path, data):
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def route_response(body):
+    """Write a response to a request-channel id into RESPONSES_DIR; True when the frame must not be forwarded.
+
+    The caller picks the id, so no request table is kept; Claude Code's integer ids never match. An id
+    whose suffix is not a uuid is dropped, so an id never becomes a path."""
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(msg, dict) or "method" in msg:
+        return False
+    rid = msg.get("id")
+    if not isinstance(rid, str) or not rid.startswith(RESPONSE_ID_PREFIX):
+        return False
+    suffix = rid[len(RESPONSE_ID_PREFIX):]
+    if not RESPONSE_ID_SUFFIX.fullmatch(suffix):
+        log(f"dropped response with invalid request-channel id {rid[:80]!r}")
+        return True
+    try:
+        write_atomically(os.path.join(RESPONSES_DIR, suffix + ".json"), body)
+    except OSError as e:
+        log(f"cannot write response {rid} to {RESPONSES_DIR}: {e}")
+    return True
 
 
 def mark_load_completed():
@@ -419,6 +462,18 @@ def ensure_workspace_dir():
         pass
     except OSError as e:
         log(f"cannot remove {LOAD_COMPLETED_FILE}: {e}")
+    # Responses and rename plans belong to an earlier server; start the channel empty.
+    for d in (RESPONSES_DIR, EDITS_DIR):
+        try:
+            shutil.rmtree(d)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log(f"cannot remove {d}: {e}")
+    try:
+        os.makedirs(RESPONSES_DIR, exist_ok=True)
+    except OSError as e:
+        log(f"cannot create {RESPONSES_DIR}: {e}")
 
 
 def startup_config_inject(child_stdin):
