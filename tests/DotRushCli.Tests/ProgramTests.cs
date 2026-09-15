@@ -1,5 +1,8 @@
+using System.Runtime.Versioning;
+
 namespace DotRushCli.Tests;
 
+[UnsupportedOSPlatform("windows")]
 public class ProgramTests
 {
     static (int Exit, string Stdout, string Stderr) Run(params string[] args)

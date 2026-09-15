@@ -256,15 +256,22 @@ public sealed class SourceDocument
         return (start, end);
     }
 
-    int Offset(LspPosition position)
+    // A position past the end of its line or of the text means the server saw a different version of the file.
+    int Offset(LspPosition position) => TryGetOffset(position, out var offset)
+        ? offset
+        : throw new WorkspaceEditException($"DotRush's view of {Path} differs from disk; preview again after the file is saved");
+
+    // The UTF-16 offset of a 0-based position; false when the position is past the end of its line or of the text.
+    public bool TryGetOffset(LspPosition position, out int offset)
     {
+        offset = 0;
         if (position.Line < 0 || position.Line >= lineStarts.Length
             || position.Character < 0 || position.Character > LineLength(position.Line))
         {
-            throw new WorkspaceEditException(
-                $"the position {position.Line}:{position.Character} is outside {Path}; preview again after the file is saved");
+            return false;
         }
-        return lineStarts[position.Line] + position.Character;
+        offset = lineStarts[position.Line] + position.Character;
+        return true;
     }
 
     // Where the line ends, its line break included.

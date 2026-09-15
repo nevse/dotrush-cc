@@ -312,11 +312,11 @@
 - Modify: `plugins/dotrush/tools/DotRushCli/Program.cs`
 - Create: `tests/DotRushCli.Tests/RenameCommandTests.cs`
 
-- [ ] write failing tests for identifier validation: `Welcomer`, unicode letters, `@class`, `var`, `record` accepted; `class`, `1abc`, `a-b`, empty rejected with exit 2 and no request sent
-- [ ] write failing tests with `FakeProxy`: 1-based line/column become a 0-based LSP position; a position not on an identifier → exit 1 before any request
-- [ ] write failing tests: a response with edits saves the plan and `.diff`, prints the summary, per-file lines, at most 200 diff lines, `diff:` and `plan:`; null or empty response → exit 1 "no symbol at this position; check it with documentSymbol"; a range whose disk text is not the old name → exit 1 "differs from disk"; outside-workspace files marked
-- [ ] implement `rename preview <file> <line> <column> <NewName>` using `LspChannel` and `WorkspaceEditApplier`
-- [ ] run tests - C# and Python suites must pass before task 9
+- [x] write failing tests for identifier validation: `Welcomer`, unicode letters, `@class`, `var`, `record` accepted; `class`, `1abc`, `a-b`, empty rejected with exit 2 and no request sent
+- [x] write failing tests with `FakeProxy`: 1-based line/column become a 0-based LSP position; a position not on an identifier → exit 1 before any request
+- [x] write failing tests: a response with edits saves the plan and `.diff`, prints the summary, per-file lines, at most 200 diff lines, `diff:` and `plan:`; null or empty response → exit 1 "no symbol at this position; check it with documentSymbol"; a range whose disk text is not the old name → exit 1 "differs from disk"; outside-workspace files marked
+- [x] implement `rename preview <file> <line> <column> <NewName>` using `LspChannel` and `WorkspaceEditApplier`
+- [x] run tests - C# and Python suites must pass before task 9
 
 ### Task 9: Implement `rename apply`
 
