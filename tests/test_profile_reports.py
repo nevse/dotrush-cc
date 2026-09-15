@@ -794,6 +794,18 @@ class InstallTests(unittest.TestCase):
 
 SUMMARIZE_DIAGNOSTICS = ROOT / "plugins/dotrush/scripts/summarize-diagnostics.py"
 DIAGNOSTICS_SH = ROOT / "plugins/dotrush/scripts/dotrush-diagnostics.sh"
+CLI_TOOLS = ROOT / "plugins/dotrush/tools"
+
+
+def build_cli(directory):
+    """Builds DotRushCli into directory, keeping build output out of the repo tree; returns the dir for DOTRUSH_CLI_DIR."""
+    output = directory / "cli"
+    result = subprocess.run([os.environ.get("DOTRUSH_DOTNET") or "dotnet", "build", "DotRushCli/DotRushCli.csproj",
+                             "-c", "Release", "--nologo", "--artifacts-path", str(directory / "artifacts"), "-o", str(output)],
+                            cwd=CLI_TOOLS, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0 or not (output / "DotRushCli.dll").is_file():
+        raise RuntimeError(f"building DotRushCli failed:\n{result.stdout}\n{result.stderr}")
+    return output
 
 
 def lsp_frame(message):
@@ -812,6 +824,13 @@ def diagnostic(line, character, severity, code, message):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # dotrush-diagnostics.sh finds the session through the CLI; one real build serves the whole class.
+        cli = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cli.cleanup)
+        cls.cli_dir = build_cli(Path(cli.name))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -972,13 +991,14 @@ class DiagnosticsTests(unittest.TestCase):
 
     def run_driver(self, *args, **env):
         env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(self.root / "data"), "DOTRUSH_SESSION_ID": "test-session",
+               "DOTRUSH_CLI_DIR": str(self.cli_dir),
                "DOTRUSH_DIAGNOSTICS_QUIET": "0", "DOTRUSH_DIAGNOSTICS_TIMEOUT": "10", **env}
         return subprocess.run(["bash", str(DIAGNOSTICS_SH), *args], capture_output=True, text=True, env=env, timeout=30)
 
-    def test_solution_injects_the_request_and_reports_what_the_server_publishes_next(self):
+    def run_solution_with_fake_proxy(self, ws):
+        """Runs `solution` while a thread plays the proxy: it reads the injected line and publishes one error."""
         import threading
 
-        ws = self.session(os.getpid())
         injected = []
 
         def fake_proxy():
@@ -987,14 +1007,76 @@ class DiagnosticsTests(unittest.TestCase):
             self.write_store(ws / "diagnostics.json", {(self.root / "A.cs").as_uri(): [diagnostic(4, 8, 1, "CS0029", "bad")]},
                              publishes=3, updated=time.time())
 
-        reader = threading.Thread(target=fake_proxy)
+        # A daemon, so a driver that never writes to the FIFO fails the test instead of hanging the run.
+        reader = threading.Thread(target=fake_proxy, daemon=True)
         reader.start()
         result = self.run_driver("solution")
         reader.join(5)
+        return result, injected
+
+    def test_solution_injects_the_request_and_reports_what_the_server_publishes_next(self):
+        ws = self.session(os.getpid())
+
+        result, injected = self.run_solution_with_fake_proxy(ws)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([json.loads(line) for line in injected], [{"method": "dotrush/solutionDiagnostics", "params": {}}])
         self.assertIn("A.cs:5:9  error  CS0029  bad", result.stdout)
+
+    def test_solution_works_against_a_proxy_that_predates_the_request_channel(self):
+        # A 0.6.x proxy has no responses/; diagnostics never needed it.
+        ws = self.session(os.getpid())
+        self.assertFalse((ws / "responses").exists())
+
+        result, injected = self.run_solution_with_fake_proxy(ws)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(injected), 1)
+        self.assertIn("A.cs:5:9  error  CS0029  bad", result.stdout)
+
+    def test_report_reads_the_last_results_after_the_proxy_is_gone(self):
+        ws = self.session(dead_pid())
+        (ws / "load-completed").unlink()
+        self.write_store(ws / "diagnostics.json", {(self.root / "B.cs").as_uri(): [diagnostic(1, 2, 2, "CS0219", "unused")]})
+
+        result = self.run_driver("report")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("B.cs:2:3  warning  CS0219  unused", result.stdout)
+
+    def test_where_prints_the_session_state_and_whether_the_request_channel_is_available(self):
+        ws = self.session(os.getpid())
+
+        older = self.run_driver("where")
+        self.assertEqual(older.returncode, 0, older.stderr)
+        self.assertEqual(older.stdout.splitlines(), [
+            f"dir: {ws}",
+            f"workspace: {self.root}",
+            f"proxy: running (pid {os.getpid()})",
+            "load: completed",
+            "target: {}",
+            "publishes: 2",
+            "channel: unavailable (older proxy)",
+        ])
+
+        (ws / "responses").mkdir()
+        self.assertEqual(self.run_driver("where").stdout.splitlines()[-1], "channel: available")
+
+    def test_lookup_never_takes_another_sessions_dir_for_the_same_workspace(self):
+        self.session(os.getpid())
+        other = {"DOTRUSH_SESSION_ID": "other-session", "CLAUDE_PROJECT_DIR": str(self.root)}
+
+        result = self.run_driver("where", **other)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no DotRush language server has started", result.stderr)
+
+        # A proxy started without a session id is still found by its workspace.
+        shared = self.root / "data/ws/0123456789ab"
+        shared.mkdir()
+        (shared / "workspace.txt").write_text(f"{self.root}\n")
+        found = self.run_driver("where", **other)
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stdout.splitlines()[0], f"dir: {shared}")
 
     def test_solution_refuses_a_session_whose_proxy_is_gone_or_predates_capture(self):
         ws = self.session(dead_pid())

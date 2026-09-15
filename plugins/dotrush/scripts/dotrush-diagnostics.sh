@@ -25,18 +25,9 @@ diagnostics, or the analysis is still running or was cancelled by an edit.
 EOF
 }
 
-# This session's runtime dir: the one recording our session id, else (no session id) our workspace.
+# This session's runtime dir, found by the CLI, which prints why when there is none and exits 1.
 session_dir() {
-  local ws hit="" sid="${DOTRUSH_SESSION_ID:-${AGTERM_SESSION_ID:-}}"
-  ws="$(dotrush_data_dir)/ws"
-  if [[ -n "$sid" ]]; then
-    hit="$(grep -lFx -- "$sid" "$ws"/sess-*/session.txt 2>/dev/null | head -1 || true)"
-  fi
-  if [[ -z "$hit" ]]; then
-    hit="$(grep -lFx -- "${CLAUDE_PROJECT_DIR:-$PWD}" "$ws"/*/workspace.txt 2>/dev/null | head -1 || true)"
-  fi
-  [[ -n "$hit" ]] || dotrush_fail "no DotRush language server has started in this session (looked in $ws); run any C# LSP operation first"
-  dirname "$hit"
+  "$SCRIPT_DIR/dotrush-cli.sh" session --dir
 }
 
 # Fails unless the proxy that owns dir is running and captures diagnostics.
@@ -92,14 +83,7 @@ case "$command" in
       --after "$baseline" --timeout "${DOTRUSH_DIAGNOSTICS_TIMEOUT:-300}" --quiet "${DOTRUSH_DIAGNOSTICS_QUIET:-2}"
     ;;
   where)
-    dir="$(session_dir)"
-    echo "dir: $dir"
-    echo "workspace: $(cat "$dir/workspace.txt" 2>/dev/null || echo unknown)"
-    pid="$(cat "$dir/pid" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then echo "proxy: running (pid $pid)"; else echo "proxy: not running"; fi
-    if [[ -f "$dir/load-completed" ]]; then echo "load: completed"; else echo "load: not completed (no project loaded yet, or still loading)"; fi
-    if [[ -f "$dir/target.json" ]]; then echo "target: $(cat "$dir/target.json")"; else echo "target: none chosen"; fi
-    if [[ -f "$dir/diagnostics.json" ]]; then echo "publishes: $(publishes "$dir/diagnostics.json")"; else echo "publishes: no capture (older proxy)"; fi
+    exec "$SCRIPT_DIR/dotrush-cli.sh" session
     ;;
   -h|--help|help)
     usage

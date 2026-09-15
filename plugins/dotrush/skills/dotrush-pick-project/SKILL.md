@@ -16,20 +16,16 @@ LSP restarts, so within a session it's asked only once.
 
 ## Steps
 
-1. **Find this session's DotRush runtime dir.** The proxy records the session id in `session.txt` and the
-   project path in `workspace.txt`. Match on the **session id** first — parallel sessions in different
-   worktrees share `$PWD`, so a `$PWD` match alone can hit the wrong session's FIFO:
+1. **Find this session's DotRush runtime dir** with the plugin's CLI. It matches the dir recording this
+   session's id first, and falls back to the project path only among dirs of proxies started without a session
+   id — so parallel sessions in different worktrees never pick each other's FIFO:
    ```bash
-   ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
-   SID="${DOTRUSH_SESSION_ID:-$AGTERM_SESSION_ID}"
-   HIT=""
-   [ -n "$SID" ] && HIT=$(grep -lFx "$SID" "$ROOT"/*/ws/sess-*/session.txt 2>/dev/null | head -1)
-   # Fallback (headless / no session id): match the recorded workspace path.
-   [ -z "$HIT" ] && HIT=$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)
-   WSDIR=$(dirname "$HIT" 2>/dev/null)
+   WSDIR=$("${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-cli.sh" session --dir)
    ```
-   - If `$HIT` is empty, the C# LSP server hasn't started for this session yet. Ask the user to trigger
-     it (open any `.cs` file, or run any C# LSP action) and re-run this skill.
+   - The first call builds the CLI (a few seconds, once per plugin version).
+   - If it exits 1 (`no DotRush language server has started in this session`), the C# LSP server hasn't
+     started for this session yet. Ask the user to trigger it (open any `.cs` file, or run any C# LSP action)
+     and re-run this skill.
    - `FIFO="$WSDIR/inject.fifo"`; persisted choice = `"$WSDIR/target.json"`.
 
 2. **Don't re-ask if already configured**: if `"$WSDIR/target.json"` exists, read it and report the current

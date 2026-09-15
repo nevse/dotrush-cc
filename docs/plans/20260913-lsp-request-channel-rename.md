@@ -256,12 +256,12 @@
 - Modify: `plugins/dotrush/skills/dotrush-pick-project/SKILL.md`
 - Modify: `tests/test_profile_reports.py`
 
-- [ ] adapt the `DiagnosticsTests` fixture first: build the CLI once per class (`dotnet build … -o <tmp>`) and pass `DOTRUSH_CLI_DIR`; keep every assertion. Expected output changes: none for `test_solution_injects_the_request_and_reports_what_the_server_publishes_next`, `test_solution_refuses_a_session_whose_proxy_is_gone_or_predates_capture`, `test_solution_refuses_to_wait_on_a_server_that_never_completed_a_load` and `test_without_a_session_dir_it_says_to_start_the_language_server`; `where` gains a `channel:` line
-- [ ] write failing tests: `report` works with a dead proxy; `solution` works against a session dir without `responses/` (0.6.x proxy); lookup ignores another session's `sess-*` dir with the same workspace
-- [ ] replace `session_dir` in `dotrush-diagnostics.sh` with `dotrush-cli.sh session --dir`, and `where` with `dotrush-cli.sh session`; keep `require_live_proxy` (pid, `diagnostics.json`, `load-completed`) and its messages unchanged
-- [ ] replace the bash lookup snippet in the pick-project skill with `WSDIR=$("${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-cli.sh" session --dir)`, keeping the "start the C# LSP first" guidance for exit 1
-- [ ] update the diagnostics skill's `where` description for the `channel:` line
-- [ ] run tests - C# and Python suites must pass before task 5
+- [x] adapt the `DiagnosticsTests` fixture first: build the CLI once per class (`dotnet build … -o <tmp>`) and pass `DOTRUSH_CLI_DIR`; keep every assertion. Expected output changes: none for `test_solution_injects_the_request_and_reports_what_the_server_publishes_next`, `test_solution_refuses_a_session_whose_proxy_is_gone_or_predates_capture`, `test_solution_refuses_to_wait_on_a_server_that_never_completed_a_load` and `test_without_a_session_dir_it_says_to_start_the_language_server`; `where` gains a `channel:` line
+- [x] write failing tests: `report` works with a dead proxy; `solution` works against a session dir without `responses/` (0.6.x proxy); lookup ignores another session's `sess-*` dir with the same workspace
+- [x] replace `session_dir` in `dotrush-diagnostics.sh` with `dotrush-cli.sh session --dir`, and `where` with `dotrush-cli.sh session`; keep `require_live_proxy` (pid, `diagnostics.json`, `load-completed`) and its messages unchanged
+- [x] replace the bash lookup snippet in the pick-project skill with `WSDIR=$("${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-cli.sh" session --dir)`, keeping the "start the C# LSP first" guidance for exit 1
+- [x] update the diagnostics skill's `where` description for the `channel:` line
+- [x] run tests - C# and Python suites must pass before task 5
 
 ### Task 5: Implement the request channel and the `request` command
 
