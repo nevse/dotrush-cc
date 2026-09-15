@@ -154,8 +154,9 @@
   guard, plan keys, hash lookups) uses fully resolved real paths on both sides, so macOS `/var` vs `/private/var`
   and symlinked checkouts compare equal.
 - **Plan files:** `$WSDIR/edits/<plan-id>.json` =
-  `{"workspace": "...", "oldName": "...", "newName": "...", "changes": {realPath: [TextEdit]}, "files": {realPath: sha256hex}}`
-  and `$WSDIR/edits/<plan-id>.diff` (full unified diff). `plan-id` is 12 lowercase hex chars, validated with
+  `{"workspace": "...", "oldName": "...", "newName": "...", "changes": {realPath: [TextEdit]}, "files": {realPath: sha256hex}, "uris": {realPath: uri}}`
+  and `$WSDIR/edits/<plan-id>.diff` (full unified diff). `uris` keeps the URI DotRush returned for each file, which
+  `apply` uses for `didOpen` (DotRush matches documents by that form, not the real path). `plan-id` is 12 lowercase hex chars, validated with
   `^[0-9a-f]{12}$` before any path is built.
 - **Text handling:** read bytes; detect and keep a UTF-8 BOM; decode strictly as UTF-8 and refuse a file that is
   not valid UTF-8. Line breaks for position mapping are the ones Roslyn `SourceText` uses: `\r\n`, `\n`, `\r`,
@@ -325,9 +326,9 @@
 - Modify: `plugins/dotrush/tools/DotRushCli/Program.cs`
 - Modify: `tests/DotRushCli.Tests/RenameCommandTests.cs`
 
-- [ ] write failing tests: apply prints the changed files, exits 0 and sends one `textDocument/didOpen` per changed file to the FIFO; a file changed since preview → exit 1 "changed since preview; run rename preview again", no writes and no `didOpen`; `--outside-workspace` required for marked files
-- [ ] implement `rename apply <plan-id> [--outside-workspace]`
-- [ ] run tests - C# and Python suites must pass before task 10
+- [x] write failing tests: apply prints the changed files, exits 0 and sends one `textDocument/didOpen` per changed file to the FIFO; a file changed since preview → exit 1 "changed since preview; run rename preview again", no writes and no `didOpen`; `--outside-workspace` required for marked files
+- [x] implement `rename apply <plan-id> [--outside-workspace]`
+- [x] run tests - C# and Python suites must pass before task 10
 
 ### Task 10: Add the e2e rename checks
 

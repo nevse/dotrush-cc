@@ -8,10 +8,13 @@ namespace DotRushCli;
 
 // `rename preview`: asks DotRush for the WorkspaceEdit of a rename, checks it against the disk, saves it as a plan
 // and prints a summary with the start of the diff.
+// `rename apply`: writes a saved plan all-or-nothing, then has DotRush re-read every changed file from disk.
 [UnsupportedOSPlatform("windows")]
 public static partial class RenameCommand
 {
     public const string PreviewSynopsis = "rename preview <file> <line> <column> <NewName> [--timeout N]";
+    public const string ApplySynopsis = "rename apply <plan-id> [--outside-workspace]";
+    const string OutsideWorkspaceFlag = "--outside-workspace";
     const int PrintedDiffLines = 200;
     const string AttributeSuffix = "Attribute";
 
@@ -33,11 +36,104 @@ public static partial class RenameCommand
     [GeneratedRegex(@"^@?[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Nd}\p{Mn}\p{Mc}\p{Pc}\p{Cf}]*\z")]
     private static partial Regex IdentifierPattern();
 
-    public static int Run(CommandContext context, string[] args) => args switch
+    public static int Run(CommandContext context, string[] args) => Run(context, args, new WorkspaceEditApplier());
+
+    // applier writes the files for `rename apply`; tests pass one whose writes or moves fail.
+    public static int Run(CommandContext context, string[] args, WorkspaceEditApplier applier) => args switch
     {
         ["preview", .. var rest] => Preview(context, rest),
-        _ => Usage(context, null),
+        ["apply", .. var rest] => Apply(context, rest, applier),
+        _ => Usage(context, null, PreviewSynopsis, ApplySynopsis),
     };
+
+    static int Apply(CommandContext context, string[] args, WorkspaceEditApplier applier)
+    {
+        var flags = args.Count(arg => arg == OutsideWorkspaceFlag);
+        if (args.Where(arg => arg != OutsideWorkspaceFlag).ToArray() is not [var planId] || flags > 1
+            || planId.StartsWith("--", StringComparison.Ordinal))
+        {
+            return Usage(context, null, ApplySynopsis);
+        }
+
+        // Readiness first: a proxy that cannot pass on the didOpen notifications must not see files changed.
+        var ready = Session.RequireChannel(context, out var session);
+        if (ready != ExitCode.Success)
+        {
+            return ready;
+        }
+        var channel = new LspChannel(session!);
+        channel.DeleteStaleResponses();
+
+        EditPlan plan;
+        IReadOnlyList<string> changed;
+        try
+        {
+            plan = WorkspaceEditApplier.LoadPlan(session!.Dir, planId);
+        }
+        catch (WorkspaceEditException e)
+        {
+            return Fail(context, e.Message);
+        }
+        try
+        {
+            changed = applier.Apply(session.Dir, planId, allowOutsideWorkspace: flags == 1);
+        }
+        catch (WorkspaceEditException e)
+        {
+            context.Stderr.WriteLine($"dotrush-cli: {e.Message}");
+            // A move that failed part way still changed some files: DotRush must re-read those like any other.
+            if (e.Changed.Count > 0 && OpenAgain(channel, plan, e.Changed) is { } problem)
+            {
+                context.Stderr.WriteLine($"dotrush-cli: {NotToldMessage(problem)}");
+            }
+            return ExitCode.Error;
+        }
+
+        var edits = changed.Sum(path => plan.Changes[path].Count);
+        context.Stdout.WriteLine(
+            $"renamed {plan.OldName} to {plan.NewName}: {Count(edits, "edit")} in {Count(changed.Count, "file")}");
+        foreach (var path in changed)
+        {
+            context.Stdout.WriteLine(DisplayPath(plan, path));
+        }
+        if (OpenAgain(channel, plan, changed) is { } failure)
+        {
+            return Fail(context, NotToldMessage(failure));
+        }
+        return ExitCode.Success;
+    }
+
+    // Sends textDocument/didOpen for each path under the URI DotRush knows it by. DotRush re-reads an opened
+    // document from disk and ignores the text; its own file watcher misses an edit that keeps the file size.
+    // Stops at the first notification that cannot be written and returns why, else null.
+    static string? OpenAgain(LspChannel channel, EditPlan plan, IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            var problem = channel.Notify("textDocument/didOpen", new JsonObject
+            {
+                ["textDocument"] = new JsonObject
+                {
+                    ["uri"] = plan.UriOf(path),
+                    ["languageId"] = "csharp",
+                    ["version"] = 0,
+                    ["text"] = "",
+                },
+            });
+            if (problem is not null)
+            {
+                return problem;
+            }
+        }
+        return null;
+    }
+
+    static string NotToldMessage(string problem) =>
+        $"the files were changed, but DotRush was not told to re-read them ({problem}); restart Claude Code so DotRush loads them from disk";
+
+    // The file as DotRush named it (the path Claude Code also uses), else its real path.
+    static string DisplayPath(EditPlan plan, string path) =>
+        Uri.TryCreate(plan.UriOf(path), UriKind.Absolute, out var uri) && uri.IsFile ? uri.LocalPath : path;
 
     // Why name cannot be a new C# name, or null when it can.
     public static string? IdentifierProblem(string name)
@@ -264,13 +360,16 @@ public static partial class RenameCommand
     static bool TryParsePositive(string text, out int value) =>
         int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) && value >= 1;
 
-    static int Usage(CommandContext context, string? problem)
+    static int Usage(CommandContext context, string? problem, params string[] synopses)
     {
         if (problem is not null)
         {
             context.Stderr.WriteLine($"dotrush-cli: {problem}");
         }
-        context.Stderr.WriteLine($"dotrush-cli: usage: dotrush-cli.sh {PreviewSynopsis}");
+        foreach (var synopsis in synopses.Length == 0 ? [PreviewSynopsis] : synopses)
+        {
+            context.Stderr.WriteLine($"dotrush-cli: usage: dotrush-cli.sh {synopsis}");
+        }
         return ExitCode.Usage;
     }
 

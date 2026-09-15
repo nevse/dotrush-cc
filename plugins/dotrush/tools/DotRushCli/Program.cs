@@ -33,6 +33,9 @@ public static class Program
         new("rename", RenameCommand.PreviewSynopsis,
             "ask DotRush to rename the symbol at a 1-based position; save the edits as a plan and print them with a diff",
             RenameCommand.Run),
+        new("rename", RenameCommand.ApplySynopsis,
+            "write a previewed plan's edits to every file (all or nothing) and have DotRush re-read the changed files",
+            RenameCommand.Run),
         new("help", "help", "print this help", (context, _) => PrintUsage(context.Stdout, ExitCode.Success)),
     ];
 
