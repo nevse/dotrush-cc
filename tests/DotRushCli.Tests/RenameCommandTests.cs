@@ -485,4 +485,295 @@ public sealed class RenameCommandTests : IDisposable
         Assert.Contains("no response to textDocument/rename within 0.3 s", result.Stderr);
         Assert.Empty(SavedPlans());
     }
+
+    // --- apply ---
+
+    const string ApplySynopsis = "rename apply <plan-id> [--outside-workspace]";
+
+    static string Renamed(string text) => text.Replace("Greeter", "Welcomer", StringComparison.Ordinal);
+
+    // Previews renaming Greeter to Welcomer in the given files (the class in the first) and returns the plan id.
+    string PreviewGreeterRename(params (string Path, string Text)[] files)
+    {
+        AnswerRequestsWith(ChangesJson([.. files.Select(file => (file.Path, GreeterEdits(file.Text)))]));
+        var result = proxy.Run("rename", "preview", files[0].Path, "3", "14", "Welcomer");
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        return Regex.Match(result.Stdout, "^plan: ([0-9a-f]{12})$", RegexOptions.Multiline).Groups[1].Value;
+    }
+
+    // An edit for every Greeter in text.
+    static string[] GreeterEdits(string text)
+    {
+        var edits = new List<string>();
+        var lines = text.Split('\n');
+        for (var line = 0; line < lines.Length; line++)
+        {
+            var count = Regex.Matches(lines[line], "Greeter").Count;
+            for (var occurrence = 0; occurrence < count; occurrence++)
+            {
+                edits.Add(EditJson(text, line, "Greeter", "Welcomer", occurrence));
+            }
+        }
+        return [.. edits];
+    }
+
+    IReadOnlyList<JsonObject> DidOpens() =>
+        [.. proxy.Lines
+            .Select(line => { try { return JsonNode.Parse(line) as JsonObject; } catch (System.Text.Json.JsonException) { return null; } })
+            .OfType<JsonObject>()
+            .Where(message => message["method"]?.GetValue<string>() == "textDocument/didOpen")];
+
+    // The didOpen notifications once count of them reached the proxy (or whatever arrived within 5 s).
+    IReadOnlyList<JsonObject> WaitForDidOpens(int count)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DidOpens().Count < count && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(20);
+        }
+        Thread.Sleep(100);
+        return DidOpens();
+    }
+
+    void AssertNoDidOpen()
+    {
+        Thread.Sleep(200);
+        Assert.Empty(DidOpens());
+    }
+
+    static void AssertDidOpen(string uri, JsonObject message) =>
+        Assert.True(JsonNode.DeepEquals(new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = "textDocument/didOpen",
+            ["params"] = new JsonObject
+            {
+                ["textDocument"] = new JsonObject { ["uri"] = uri, ["languageId"] = "csharp", ["version"] = 0, ["text"] = "" },
+            },
+        }, message), message.ToJsonString());
+
+    bool PlanExists(string planId) => File.Exists(Path.Combine(EditsDir, planId + ".json"));
+
+    [Fact]
+    public void Apply_writes_the_files_prints_them_and_sends_one_didOpen_per_changed_file()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var app = WriteFile("App.cs", AppText);
+        var planId = PreviewGreeterRename((greeter, GreeterText), (app, AppText));
+
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Equal($"renamed Greeter to Welcomer: 3 edits in 2 files\n{app}\n{greeter}\n", result.Stdout);
+        Assert.Equal(Renamed(GreeterText), File.ReadAllText(greeter));
+        Assert.Equal(Renamed(AppText), File.ReadAllText(app));
+        var didOpens = WaitForDidOpens(2);
+        Assert.Equal(2, didOpens.Count);
+        AssertDidOpen(UriOf(app), didOpens[0]);
+        AssertDidOpen(UriOf(greeter), didOpens[1]);
+        Assert.Empty(SavedPlans());
+    }
+
+    [Fact]
+    public void Apply_opens_each_file_under_the_uri_DotRush_returned_for_a_workspace_reached_through_a_symlink()
+    {
+        WriteFile("Greeter.cs", GreeterText);
+        WriteFile("App.cs", AppText);
+        var link = Path.Combine(Path.GetDirectoryName(proxy.Workspace)!, "project-link");
+        Directory.CreateSymbolicLink(link, proxy.Workspace);
+        var linkedGreeter = Path.Combine(link, "Greeter.cs");
+        var linkedApp = Path.Combine(link, "App.cs");
+        var planId = PreviewGreeterRename((linkedGreeter, GreeterText), (linkedApp, AppText));
+
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Equal($"renamed Greeter to Welcomer: 3 edits in 2 files\n{linkedApp}\n{linkedGreeter}\n", result.Stdout);
+        var didOpens = WaitForDidOpens(2);
+        Assert.Equal(2, didOpens.Count);
+        AssertDidOpen(UriOf(linkedApp), didOpens[0]);
+        AssertDidOpen(UriOf(linkedGreeter), didOpens[1]);
+        Assert.NotEqual(UriOf(linkedGreeter), UriOf(Posix.RealPath(linkedGreeter)!));
+        Assert.Equal(Renamed(GreeterText), File.ReadAllText(Path.Combine(proxy.Workspace, "Greeter.cs")));
+        Assert.True(new FileInfo(link).LinkTarget is not null);
+    }
+
+    [Fact]
+    public void Apply_of_a_plan_without_uris_opens_the_files_by_their_real_paths()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var planId = PreviewGreeterRename((greeter, GreeterText));
+        var planPath = Path.Combine(EditsDir, planId + ".json");
+        var plan = JsonNode.Parse(File.ReadAllText(planPath))!.AsObject();
+        Assert.True(plan.Remove("uris"));
+        File.WriteAllText(planPath, plan.ToJsonString());
+
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        AssertDidOpen(UriOf(Posix.RealPath(greeter)!), Assert.Single(WaitForDidOpens(1)));
+    }
+
+    [Fact]
+    public void Apply_refuses_a_file_changed_since_preview_writes_nothing_and_sends_no_didOpen()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var app = WriteFile("App.cs", AppText);
+        var planId = PreviewGreeterRename((greeter, GreeterText), (app, AppText));
+        File.WriteAllText(app, AppText + "// edited\n");
+
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal(
+            (1, "", $"dotrush-cli: {Posix.RealPath(app)} changed since preview; run rename preview again\n"), result);
+        Assert.Equal(GreeterText, File.ReadAllText(greeter));
+        Assert.Equal(AppText + "// edited\n", File.ReadAllText(app));
+        AssertNoDidOpen();
+        Assert.True(PlanExists(planId));
+    }
+
+    [Fact]
+    public void Apply_requires_outside_workspace_for_marked_files()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var generated = WriteFile("obj/Debug/Greeter.g.cs", GreeterText);
+        var planId = PreviewGreeterRename((greeter, GreeterText), (generated, GreeterText));
+
+        var refused = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((1, ""), (refused.Exit, refused.Stdout));
+        Assert.Contains($"{Posix.RealPath(generated)} is outside the workspace", refused.Stderr);
+        Assert.Contains("apply with --outside-workspace", refused.Stderr);
+        Assert.Equal(GreeterText, File.ReadAllText(greeter));
+        Assert.Equal(GreeterText, File.ReadAllText(generated));
+        AssertNoDidOpen();
+
+        var applied = proxy.Run("rename", "apply", "--outside-workspace", planId);
+
+        Assert.Equal((0, ""), (applied.Exit, applied.Stderr));
+        Assert.Equal(Renamed(GreeterText), File.ReadAllText(greeter));
+        Assert.Equal(Renamed(GreeterText), File.ReadAllText(generated));
+        var didOpens = WaitForDidOpens(2);
+        Assert.Equal(2, didOpens.Count);
+        AssertDidOpen(UriOf(greeter), didOpens[0]);
+        AssertDidOpen(UriOf(generated), didOpens[1]);
+    }
+
+    [Theory]
+    [InlineData("pid")]
+    [InlineData("responses")]
+    [InlineData("load-completed")]
+    public void Apply_checks_channel_readiness_before_writing_any_file(string broken)
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var planId = PreviewGreeterRename((greeter, GreeterText));
+        switch (broken)
+        {
+            case "pid":
+                // Past the largest pid macOS and Linux hand out.
+                File.WriteAllText(Path.Combine(proxy.Dir, "pid"), "2147483000\n");
+                break;
+            case "responses":
+                Directory.Delete(proxy.ResponsesDir);
+                break;
+            default:
+                File.Delete(Path.Combine(proxy.Dir, "load-completed"));
+                break;
+        }
+
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.StartsWith("dotrush-cli: ", result.Stderr);
+        Assert.Equal(GreeterText, File.ReadAllText(greeter));
+        AssertNoDidOpen();
+        Assert.True(PlanExists(planId));
+    }
+
+    [Theory]
+    [InlineData("../x")]
+    [InlineData("0123456789ab")]
+    public void Apply_of_an_unknown_plan_says_to_preview_again(string planId)
+    {
+        var result = proxy.Run("rename", "apply", planId);
+
+        Assert.Equal((1, "", $"dotrush-cli: unknown plan '{planId}'; run rename preview again\n"), result);
+        AssertNothingSent();
+    }
+
+    [Theory]
+    [InlineData("apply")]
+    [InlineData("apply|0123456789ab|extra")]
+    [InlineData("apply|0123456789ab|--force")]
+    [InlineData("apply|--outside-workspace")]
+    public void Malformed_apply_arguments_are_a_usage_error(string joinedArgs)
+    {
+        var result = proxy.Run(["rename", .. joinedArgs.Split('|')]);
+
+        Assert.Equal((2, ""), (result.Exit, result.Stdout));
+        Assert.Contains($"usage: dotrush-cli.sh {ApplySynopsis}", result.Stderr);
+        AssertNothingSent();
+    }
+
+    [Fact]
+    public void Both_rename_subcommands_are_in_the_usage_table()
+    {
+        var stdout = new StringWriter();
+
+        Program.Run(["help"], proxy.Env(), proxy.Workspace, stdout, new StringWriter());
+
+        Assert.Contains("dotrush-cli.sh rename preview <file> <line> <column> <NewName> [--timeout N]", stdout.ToString());
+        Assert.Contains($"dotrush-cli.sh {ApplySynopsis}", stdout.ToString());
+    }
+
+    [Fact]
+    public void A_failing_move_reports_changed_and_unchanged_files_and_opens_only_the_changed_ones()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var app = WriteFile("App.cs", AppText);
+        var planId = PreviewGreeterRename((greeter, GreeterText), (app, AppText));
+        var realGreeter = Posix.RealPath(greeter)!;
+        var applier = new WorkspaceEditApplier(moveFile: (from, to) =>
+        {
+            if (to == realGreeter)
+            {
+                throw new IOException("permission denied");
+            }
+            File.Move(from, to, overwrite: true);
+        });
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = RenameCommand.Run(new CommandContext(proxy.Env(), proxy.Workspace, stdout, stderr), ["apply", planId], applier);
+
+        Assert.Equal((1, ""), (exit, stdout.ToString()));
+        Assert.Contains("permission denied", stderr.ToString());
+        Assert.Contains($"changed: {Posix.RealPath(app)}; unchanged: {realGreeter}", stderr.ToString());
+        Assert.Equal(Renamed(AppText), File.ReadAllText(app));
+        Assert.Equal(GreeterText, File.ReadAllText(greeter));
+        AssertDidOpen(UriOf(app), Assert.Single(WaitForDidOpens(1)));
+        Assert.True(PlanExists(planId));
+    }
+
+    [Fact]
+    public void A_didOpen_that_cannot_be_written_after_apply_is_reported_with_the_changed_files()
+    {
+        using var deaf = new FakeProxy(withReader: false);
+        var greeter = Path.Combine(deaf.Workspace, "Greeter.cs");
+        File.WriteAllText(greeter, GreeterText);
+        var preview = WorkspaceEditApplier.Preview(deaf.Workspace, "Greeter", "Welcomer",
+            new Dictionary<string, IReadOnlyList<LspTextEdit>>
+            {
+                [UriOf(greeter)] = [new(new(new(2, 13), new(2, 20)), "Welcomer")],
+            });
+        var planId = WorkspaceEditApplier.SavePlan(deaf.Dir, preview);
+
+        var result = deaf.Run("rename", "apply", planId);
+
+        Assert.Equal(1, result.Exit);
+        Assert.Equal($"renamed Greeter to Welcomer: 1 edit in 1 file\n{greeter}\n", result.Stdout);
+        Assert.Contains("cannot write to the proxy's FIFO", result.Stderr);
+        Assert.Contains("the files were changed, but DotRush was not told to re-read them", result.Stderr);
+        Assert.Equal(Renamed(GreeterText), File.ReadAllText(greeter));
+    }
 }

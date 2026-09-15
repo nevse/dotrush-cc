@@ -15,13 +15,21 @@ public sealed record LspRange(LspPosition Start, LspPosition End);
 public sealed record LspTextEdit(LspRange Range, string NewText);
 
 // What `rename preview` saves to edits/<plan-id>.json and `rename apply` executes. Every path is a fully resolved
-// real path; Files holds the sha256 of each file's bytes as the preview read them.
+// real path; Files holds the sha256 of each file's bytes as the preview read them. Uris holds, per real path, the
+// URI DotRush used for the file in its rename result: DotRush knows a document by that form (which may run through
+// a symlink, or /var rather than /private/var), so `rename apply` opens the file again under it.
 public sealed record EditPlan(
     string Workspace,
     string OldName,
     string NewName,
     IReadOnlyDictionary<string, IReadOnlyList<LspTextEdit>> Changes,
-    IReadOnlyDictionary<string, string> Files);
+    IReadOnlyDictionary<string, string> Files,
+    IReadOnlyDictionary<string, string>? Uris = null)
+{
+    // The URI to tell DotRush about path by: the one it returned, else the real path's.
+    public string UriOf(string path) =>
+        Uris is not null && Uris.TryGetValue(path, out var uri) ? uri : new Uri(path).AbsoluteUri;
+}
 
 // One file of a preview: its edits in the order given, with the disk text each edit's range covers.
 public sealed record FilePreview(
@@ -365,18 +373,21 @@ public sealed partial class WorkspaceEditApplier(
     {
         var root = Posix.RealPath(workspace) ?? throw new WorkspaceEditException($"the workspace {workspace} does not exist");
         var byPath = new SortedDictionary<string, List<LspTextEdit>>(StringComparer.Ordinal);
+        var uriByPath = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (uri, edits) in changes)
         {
             var path = ResolveUri(uri);
             if (!byPath.TryGetValue(path, out var list))
             {
                 byPath[path] = list = [];
+                uriByPath[path] = uri;
             }
             list.AddRange(edits);
         }
 
         var planChanges = new SortedDictionary<string, IReadOnlyList<LspTextEdit>>(StringComparer.Ordinal);
         var hashes = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var uris = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var files = new List<FilePreview>();
         var diff = new StringBuilder();
         foreach (var (path, edits) in byPath)
@@ -390,9 +401,10 @@ public sealed partial class WorkspaceEditApplier(
             diff.Append(document.Diff(relative, edits));
             planChanges[path] = edits;
             hashes[path] = Sha256(document.Bytes);
+            uris[path] = uriByPath[path];
             files.Add(new(path, relative, edits.Count, IsOutsideWorkspace(path, root), [.. edits.Select(edit => document.TextAt(edit.Range))]));
         }
-        return new(new(root, oldName, newName, planChanges, hashes), diff.ToString(), files);
+        return new(new(root, oldName, newName, planChanges, hashes, uris), diff.ToString(), files);
     }
 
     // A file URI as a fully resolved real path, symlinks included.
