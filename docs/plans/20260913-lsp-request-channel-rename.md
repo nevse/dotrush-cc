@@ -241,12 +241,12 @@
 - Modify: `plugins/dotrush/tools/DotRushCli/Program.cs`
 - Create: `tests/DotRushCli.Tests/SessionTests.cs`
 
-- [ ] write failing lookup tests (temp data dirs): match by session id; without a session id match `workspace.txt` in a non-`sess-` dir; a session id that matches nothing never picks another session's `sess-*` dir; with several matches the live-pid dir wins
-- [ ] write failing tests that lookup succeeds in unready states: `session --dir` returns the dir and exit 0 with a dead pid, without `responses/`, and without `load-completed`; no dir → "no DotRush language server has started in this session (looked in …); run any C# LSP operation first", exit 1
-- [ ] write failing test for `session` output: the six `where` lines in today's wording plus the `channel:` line, for running/not running, completed/not completed, target/none, capture/no capture
-- [ ] write failing tests for channel readiness (used later by `request`/`rename`): dead pid, missing `responses/`, missing `load-completed` — each message and exit 1
-- [ ] implement `Session.cs` (lookup, state, channel readiness) and the `session` / `session --dir` commands
-- [ ] run tests - C# and Python suites must pass before task 4
+- [x] write failing lookup tests (temp data dirs): match by session id; without a session id match `workspace.txt` in a non-`sess-` dir; a session id that matches nothing never picks another session's `sess-*` dir; with several matches the live-pid dir wins
+- [x] write failing tests that lookup succeeds in unready states: `session --dir` returns the dir and exit 0 with a dead pid, without `responses/`, and without `load-completed`; no dir → "no DotRush language server has started in this session (looked in …); run any C# LSP operation first", exit 1
+- [x] write failing test for `session` output: the six `where` lines in today's wording plus the `channel:` line, for running/not running, completed/not completed, target/none, capture/no capture
+- [x] write failing tests for channel readiness (used later by `request`/`rename`): dead pid, missing `responses/`, missing `load-completed` — each message and exit 1
+- [x] implement `Session.cs` (lookup, state, channel readiness) and the `session` / `session --dir` commands
+- [x] run tests - C# and Python suites must pass before task 4
 
 ### Task 4: Switch `dotrush-diagnostics` and `dotrush-pick-project` to the CLI lookup
 
