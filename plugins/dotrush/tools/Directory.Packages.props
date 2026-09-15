@@ -1,0 +1,3 @@
+<!-- Intentionally empty: stops central package management from the user's parent directories applying here. -->
+<Project>
+</Project>
