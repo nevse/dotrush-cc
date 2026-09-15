@@ -854,6 +854,68 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(list(data["files"]), [b])
         self.assertIsInstance(data["updated"], float)
 
+    def pump(self, stream):
+        """Runs the proxy's server->client pump over stream with a prepared responses/ dir; returns (stdout, WS_DIR)."""
+        script = (
+            "import importlib.util, os, sys\n"
+            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
+            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
+            "os.makedirs(os.path.join(proxy.WS_DIR, 'responses'))\n"
+            "proxy.pump_server_to_client(sys.stdin)\n"
+            "sys.stderr.write(proxy.WS_DIR)\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "route"}
+        result = subprocess.run([sys.executable, "-c", script], input=stream, env=env, capture_output=True, check=True)
+        return result.stdout, Path(result.stderr.decode())
+
+    def test_proxy_routes_dotrush_cc_responses_to_files_and_forwards_everything_else_verbatim(self):
+        uuid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        ours = {"jsonrpc": "2.0", "id": f"dotrush-cc:{uuid}", "result": {"contents": "class Greeter"}}
+        forwarded = b"".join([
+            lsp_frame({"jsonrpc": "2.0", "id": 3, "result": None}),
+            lsp_frame({"jsonrpc": "2.0", "id": "other:1", "result": None}),
+            lsp_frame({"jsonrpc": "2.0", "id": 4, "result": {"text": f"dotrush-cc:{uuid}"}}),
+            b'Content-Length: 20\r\n\r\n{"id":"dotrush-cc:x"',
+        ])
+        body = json.dumps(ours).encode("utf-8")
+
+        stdout, ws = self.pump(lsp_frame(ours) + forwarded)
+
+        self.assertEqual(stdout, forwarded)
+        self.assertEqual(os.listdir(ws / "responses"), [f"{uuid}.json"])
+        self.assertEqual((ws / "responses" / f"{uuid}.json").read_bytes(), body)
+
+    def test_proxy_drops_dotrush_cc_responses_whose_id_is_not_a_uuid(self):
+        stream = b"".join(lsp_frame({"jsonrpc": "2.0", "id": f"dotrush-cc:{suffix}", "result": 1}) for suffix in ("../x", ""))
+
+        stdout, ws = self.pump(stream)
+
+        self.assertEqual(stdout, b"")
+        self.assertEqual(os.listdir(ws / "responses"), [])
+        self.assertEqual(sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*")),
+                         ["ws", ws.relative_to(self.root).as_posix(), ws.relative_to(self.root).as_posix() + "/responses"])
+
+    def test_workspace_dir_setup_empties_responses_and_removes_saved_edits(self):
+        import hashlib
+
+        ws = self.root / "ws" / ("sess-" + hashlib.sha1(b"setup").hexdigest()[:12])
+        (ws / "responses").mkdir(parents=True)
+        (ws / "responses" / "stale.json").write_text("{}")
+        (ws / "edits").mkdir()
+        (ws / "edits" / "0123456789ab.json").write_text("{}")
+        script = (
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
+            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
+            "proxy.ensure_workspace_dir()\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "setup"}
+        subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, check=True)
+
+        self.assertTrue((ws / "responses").is_dir())
+        self.assertEqual(os.listdir(ws / "responses"), [])
+        self.assertFalse((ws / "edits").exists())
+
     def test_summary_lists_errors_first_with_one_based_positions_relative_to_the_root(self):
         store = self.root / "diagnostics.json"
         self.write_store(store, {
