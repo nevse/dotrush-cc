@@ -73,7 +73,11 @@ public sealed partial class FakeProxy : IDisposable
     }
 
     // Writes {"jsonrpc":"2.0","id":<id>,<fields>} to responses/<uuid>.json, atomically as the proxy does.
-    public void Respond(string id, string fields)
+    public void Respond(string id, string fields) =>
+        RespondWithBody(id, $$"""{"jsonrpc":"2.0","id":"{{id}}",{{fields}}}""");
+
+    // Writes body verbatim to responses/<uuid>.json, as the proxy does with whatever the server sent.
+    public void RespondWithBody(string id, string body)
     {
         const string prefix = "dotrush-cc:";
         if (!id.StartsWith(prefix, StringComparison.Ordinal))
@@ -82,7 +86,7 @@ public sealed partial class FakeProxy : IDisposable
         }
         var target = Path.Combine(ResponsesDir, id[prefix.Length..] + ".json");
         var temp = target + "." + Environment.ProcessId + ".tmp";
-        File.WriteAllText(temp, $$"""{"jsonrpc":"2.0","id":"{{id}}",{{fields}}}""");
+        File.WriteAllText(temp, body);
         File.Move(temp, target, overwrite: true);
         Interlocked.Increment(ref responses);
     }
