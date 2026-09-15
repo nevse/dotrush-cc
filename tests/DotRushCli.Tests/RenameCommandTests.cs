@@ -424,6 +424,54 @@ public sealed class RenameCommandTests : IDisposable
         Assert.Equal((0, ""), (result.Exit, result.Stderr));
     }
 
+    // The real DotRush sends Roslyn's minimal text changes: Greeter -> Welcomer keeps the shared "er" and arrives as
+    // Greet -> Welcom, so an edit's own text is only part of the old name.
+    [Fact]
+    public void Edits_trimmed_to_the_changed_part_of_the_old_name_are_accepted()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var app = WriteFile("App.cs", AppText);
+        AnswerRequestsWith(ChangesJson(
+            (greeter, [EditJson(GreeterText, 2, "Greet", "Welcom")]),
+            (app, [EditJson(AppText, 4, "Greet", "Welcom"), EditJson(AppText, 5, "Greet", "Welcom")])));
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.StartsWith("3 edits in 2 files\n", result.Stdout);
+        Assert.Contains("+public class Welcomer\n", result.Stdout);
+        Assert.Contains("+    public static string Run() => new Welcomer().Greet();\n", result.Stdout);
+        Assert.Contains("+    static Welcomer Make() => new();\n", result.Stdout);
+    }
+
+    [Fact]
+    public void An_insertion_at_the_end_of_the_old_name_is_accepted()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var character = GreeterText.Split('\n')[2].IndexOf("Greeter", StringComparison.Ordinal) + "Greeter".Length;
+        AnswerRequestsWith(ChangesJson((greeter,
+            [$$$"""{"range":{"start":{"line":2,"character":{{{character}}}},"end":{"line":2,"character":{{{character}}}}},"newText":"X"}"""])));
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "GreeterX");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Contains("+public class GreeterX\n", result.Stdout);
+    }
+
+    [Fact]
+    public void A_trimmed_edit_inside_a_different_identifier_differs_from_disk()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        // Line 4's "Greet" is the whole method name Greet, not part of Greeter.
+        AnswerRequestsWith(ChangesJson((greeter,
+            [EditJson(GreeterText, 2, "Greet", "Welcom"), EditJson(GreeterText, 4, "Greet", "Welcom")])));
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, "", $"dotrush-cli: DotRush's view of {Posix.RealPath(greeter)} {DiffersFromDisk}\n"), result);
+        Assert.Empty(SavedPlans());
+    }
+
     [Fact]
     public void A_position_on_the_at_sign_of_an_escaped_identifier_uses_the_name_after_it()
     {

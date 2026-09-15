@@ -217,10 +217,9 @@ public static partial class RenameCommand
             }
 
             var preview = WorkspaceEditApplier.Preview(workspace, oldName, newName, changes);
-            var accepted = AcceptedRangeTexts(oldName);
-            if (preview.Files.FirstOrDefault(entry => !entry.RangeTexts.All(accepted.Contains)) is { } stale)
+            if (FileDifferingFromDisk(preview, oldName) is { } stale)
             {
-                return Fail(context, $"DotRush's view of {stale.Path} differs from disk; preview again after the file is saved");
+                return Fail(context, $"DotRush's view of {stale} differs from disk; preview again after the file is saved");
             }
             var planId = WorkspaceEditApplier.SavePlan(session.Dir, preview);
             Print(context.Stdout, preview, WorkspaceEditApplier.DiffPath(session.Dir, planId), planId);
@@ -285,9 +284,52 @@ public static partial class RenameCommand
             or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.Format;
     }
 
-    // What a range of the rename may cover on disk: the old name, escaped with @, and for attributes the name with
-    // or without its Attribute suffix.
-    static HashSet<string> AcceptedRangeTexts(string oldName)
+    // The first file of the preview with an edit that does not sit inside the old name on disk, or null. DotRush
+    // sends Roslyn's minimal text changes (Greeter -> Welcomer arrives as Greet -> Welcom, keeping the shared "er"),
+    // so each edit is judged by the whole identifier around its range, not by the range's own text.
+    static string? FileDifferingFromDisk(EditPreview preview, string oldName)
+    {
+        var accepted = AcceptedNames(oldName);
+        foreach (var file in preview.Files)
+        {
+            var document = SourceDocument.Load(file.Path);
+            if (WorkspaceEditApplier.Sha256(document.Bytes) != preview.Plan.Files[file.Path])
+            {
+                return file.Path;
+            }
+            foreach (var edit in preview.Plan.Changes[file.Path])
+            {
+                if (!document.TryGetOffset(edit.Range.Start, out var start) || !document.TryGetOffset(edit.Range.End, out var end)
+                    || end < start || !accepted.Contains(EnclosingName(document.Text, start, end)))
+                {
+                    return file.Path;
+                }
+            }
+        }
+        return null;
+    }
+
+    // text[start..end] widened to the identifier it lies in, with the @ escaping that identifier.
+    static string EnclosingName(string text, int start, int end)
+    {
+        while (start > 0 && IsIdentifierPart(text, start - 1))
+        {
+            start--;
+        }
+        if (start > 0 && text[start - 1] == '@')
+        {
+            start--;
+        }
+        while (end < text.Length && IsIdentifierPart(text, end))
+        {
+            end++;
+        }
+        return text[start..end];
+    }
+
+    // The identifiers an edit of the rename may lie in on disk: the old name, escaped with @, and for attributes the
+    // name with or without its Attribute suffix.
+    static HashSet<string> AcceptedNames(string oldName)
     {
         List<string> names = [oldName, oldName + AttributeSuffix];
         if (oldName.Length > AttributeSuffix.Length && oldName.EndsWith(AttributeSuffix, StringComparison.Ordinal))

@@ -162,7 +162,8 @@
   not valid UTF-8. Line breaks for position mapping are the ones Roslyn `SourceText` uses: `\r\n`, `\n`, `\r`,
   U+0085, U+2028, U+2029. Edits per file sorted by start descending; overlapping edits rejected.
 - **Preview consistency check:** the requested position must land on an identifier character (clear error
-  otherwise); that identifier is `oldName`. Every returned range's text on disk must equal `oldName`, `@oldName`,
+  otherwise); that identifier is `oldName`. DotRush sends Roslyn's minimal text changes, so each returned
+  range is widened on disk to the identifier it lies in (with a leading `@`), which must equal `oldName`, `@oldName`,
   or `oldName` without an `Attribute` suffix / `oldNameAttribute`; otherwise refuse with "DotRush's view of
   <file> differs from disk; preview again after the file is saved".
 - **Writing:** symlinked files are resolved to their target and the target is written. For each file write
@@ -336,10 +337,12 @@
 - Create: `tests/DotRushCli.Tests/E2E/RenameE2ETests.cs`
 - Modify: `tests/DotRushCli.Tests/E2E/DotRushServerFixture.cs`
 
-- [ ] write e2e test: preview renaming `Greeter` → `Welcomer` lists edits in both files; apply rewrites both on disk
-- [ ] write e2e test: after apply, `request textDocument/hover` at the class shows the new name — once for a longer name (`Welcomer`) and once for a same-length name (`Welcome`), which DotRush's size-based watcher alone would miss
-- [ ] write e2e test: modify one file between preview and apply → apply refuses and both files are unchanged
-- [ ] run the e2e and unit suites - must pass before task 11
+- [x] write e2e test: preview renaming `Greeter` → `Welcomer` lists edits in both files; apply rewrites both on disk
+- [x] write e2e test: after apply, `request textDocument/hover` at the class shows the new name — once for a longer name (`Welcomer`) and once for a same-length name (`Welcome`), which DotRush's size-based watcher alone would miss
+- [x] write e2e test: modify one file between preview and apply → apply refuses and both files are unchanged
+- [x] run the e2e and unit suites - must pass before task 11
+- ⚠️ the real DotRush returns Roslyn's minimal text changes (`Greeter` → `Welcomer` arrives as `Greet` → `Welcom`), so preview's consistency check now compares the whole identifier on disk around each edit with the accepted old-name forms, not the range text
+- ⚠️ on macOS DotRush's watcher also picked up a same-size in-place write within 5 s (temporary probe, no didOpen), so hover after apply confirms the outcome but cannot isolate didOpen; the e2e test additionally checks the proxy log for one injected `didOpen` per changed file
 
 ### Task 11: Add the `dotrush-rename` skill
 
