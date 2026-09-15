@@ -2,7 +2,8 @@
 
 A Claude Code **marketplace** containing the `dotrush` plugin: the [DotRush](https://github.com/JaneySprings/DotRush)
 Roslyn language server wired into Claude Code's `LSP` tool for C#/.NET, plus a stdio **proxy** that can
-inject custom LSP messages into the running server, and skills for CPU and managed-memory profiling.
+inject custom LSP messages into the running server and read the responses, and skills for semantic renames,
+solution diagnostics, and CPU and managed-memory profiling.
 
 The DotRush server is **not** committed here. The DotRush version is pinned in
 [`dotrush-version.json`](plugins/dotrush/dotrush-version.json), and on first use the plugin **downloads that
@@ -38,7 +39,8 @@ Or enable it declaratively in `.claude/settings.json`:
 
 - `curl` and `unzip` to download DotRush release bundles, or `git` to build DotRush when the pin is not such a release
 - `python3` (the proxy is a stdlib-only Python 3 script)
-- A .NET 10 SDK on PATH (DotRush loads/analyzes MSBuild projects, runs on .NET 10+, and builds from source with it)
+- A .NET 10 SDK on PATH (DotRush loads/analyzes MSBuild projects, runs on .NET 10+, and builds from source with it;
+  the plugin also builds its small C# CLI with it on first use, used by the rename and diagnostics skills)
 
 ## Quick start after install
 
@@ -48,7 +50,8 @@ Or enable it declaratively in `.claude/settings.json`:
    choice — no `dotrush.config.json` needed, nothing written into your repo.
 3. Verify via **`/plugin` → Installed → `dotrush`** (and the **Errors** tab). There is no `/lsp` command.
 4. See [`plugins/dotrush/README.md`](plugins/dotrush/README.md) for capabilities, the injection FIFO,
-   on-demand diagnostics, **live reconfigure/reload without a restart**, and .NET profiling.
+   on-demand diagnostics, semantic rename, the request channel, **live reconfigure/reload without a restart**,
+   and .NET profiling.
 
 ## Usage examples
 
@@ -72,6 +75,15 @@ Claude lists the `.sln/.slnx/.csproj` files it finds, asks which one to load, an
 
 Behind these are `findReferences`, `goToImplementation`, `hover`, `goToDefinition`, `documentSymbol` and
 `workspaceSymbol`. Call hierarchy isn't available, so "who calls X" is answered from references.
+
+**Rename a symbol** across the solution:
+
+> rename `OrderService.PlaceOrder` to `SubmitOrder`
+
+Claude locates the method, asks DotRush for the Roslyn rename, and shows you the edit count per file and the diff.
+Nothing is written until you confirm; then every file changes or none does, and a file edited since the preview
+makes it stop and preview again. Same-named members of other types stay as they are. Overloads, strings, comments
+and file names are not renamed (the `dotrush-rename` skill).
 
 **Profile CPU** of a running app:
 
@@ -114,8 +126,10 @@ dotrush-cc/
 └── plugins/dotrush/
     ├── .claude-plugin/plugin.json        # plugin manifest (declares the LSP server)
     ├── .lsp.json                         # csharp LSP -> bin/lsp-proxy.py, portable ${CLAUDE_PLUGIN_*} paths
-    ├── bin/lsp-proxy.py                  # stdio MITM proxy + injector + auto-install-on-first-run
+    ├── bin/lsp-proxy.py                  # stdio MITM proxy + injector + request channel + auto-install-on-first-run
     ├── dotrush-version.json              # pins the DotRush server release and diagnostics tag or commit
+    ├── tools/DotRushCli/                 # C# CLI: session lookup, LSP requests, rename preview/apply
+    ├── scripts/dotrush-cli.sh            # builds the CLI on first use into the plugin data dir and runs it
     ├── scripts/install-dotrush.sh        # installs the DotRush server or profiling tools at the pinned ref
     ├── scripts/dotrush-install.sh        # shared install logic: one ref, release bundles or a build from source
     ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU traces and GC dumps
@@ -125,9 +139,11 @@ dotrush-cc/
     ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
     ├── skills/dotrush-pick-project/      # picks the .sln/.slnx/.csproj DotRush loads, applied live
     ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
+    ├── skills/dotrush-rename/            # semantic rename: preview, confirm, all-or-nothing apply
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
     ├── README.md                         # plugin usage
     └── CHANGELOG.md                      # release notes
 tests/test_profile_reports.py             # unit tests for the report tools, installer and proxy (python3 -m unittest)
+tests/DotRushCli.Tests/                   # xUnit tests for the CLI and its wrapper (dotnet test); E2E/ runs against a real DotRush
 ```

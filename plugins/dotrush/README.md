@@ -2,7 +2,8 @@
 
 Wires the [DotRush](https://github.com/JaneySprings/DotRush) Roslyn language server into Claude Code's
 `LSP` tool, and puts a stdio **proxy** in front of it so you can inject custom LSP messages into the
-*running* server — on-demand diagnostics, and live solution reconfigure/reload without a restart.
+*running* server — on-demand diagnostics, semantic solution-wide renames, and live solution reconfigure/reload
+without a restart.
 
 Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -12,7 +13,9 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 |------|------|
 | `.claude-plugin/plugin.json` | plugin manifest; declares the `csharp` LSP server via `.lsp.json` |
 | `.lsp.json` | maps `.cs/.csx/.cshtml` → `bin/lsp-proxy.py`; wires portable `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` paths + a 15 min startup timeout (a first run may build from source) |
-| `bin/lsp-proxy.py` | stdio man-in-the-middle: verbatim forwarding + custom-message injection + auto-install-on-first-run (stdlib-only Python 3) |
+| `bin/lsp-proxy.py` | stdio man-in-the-middle: verbatim forwarding + custom-message injection + request-channel responses to files + auto-install-on-first-run (stdlib-only Python 3) |
+| `tools/DotRushCli/` | the plugin's C# CLI (`net10.0`, no packages): `session`, `request`, `rename preview`, `rename apply` |
+| `scripts/dotrush-cli.sh` | runs the CLI, building it on first use into `${CLAUDE_PLUGIN_DATA}/cli/<source-hash>/` |
 | `dotrush-version.json` | pins the DotRush repository and the one tag or commit both the server and the profiling tools come from |
 | `scripts/install-dotrush.sh` | installs the DotRush server or profiling tools at the pinned ref: the release bundles when the release ships them, otherwise a build from source (logic shared in `scripts/dotrush-install.sh`) |
 | `scripts/dotrush-profile.sh` | runs DotRush's own `dotnet-trace`/`dotnet-gcdump` at the pinned ref, installed exactly as the server is, then collects and reports bounded CPU traces or GC dumps |
@@ -22,6 +25,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
+| `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then an all-or-nothing apply after you confirm |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
@@ -105,6 +109,10 @@ behavior, where the project choice also persists across restarts. Per-session sc
 cross-restart persistence for isolation: a fresh session re-picks its project (parallel worktree sessions
 otherwise share `CLAUDE_PROJECT_DIR` and clobber one shared choice).
 
+The plugin's tools find the current session's dir with `dotrush-cli.sh session --dir`: the `sess-*` dir recording
+this session id, else a dir whose `workspace.txt` is `CLAUDE_PROJECT_DIR` (or the working directory) among the
+per-workspace dirs only. Another session's `sess-*` dir is never picked, even for the same workspace.
+
 ## Capabilities (via the Claude Code `LSP` tool)
 
 Work: `documentSymbol`, `workspaceSymbol` (needs a non-empty query), `hover`, `goToDefinition`,
@@ -177,21 +185,65 @@ What to expect:
 - Any later analysis replaces the set: once Claude Code opens or edits a file, DotRush re-analyzes that document
   and clears the others, so run `solution` again for the whole view. An edit during the analysis cancels it.
 
+## Semantic rename
+
+Ask Claude to **rename a C# symbol** ("rename `Greeter` to `Welcomer`") or invoke `dotrush-rename`. DotRush
+resolves the symbol with Roslyn, so only references to that one symbol change; same-named identifiers elsewhere are
+left alone. Claude finds the symbol's position with the `LSP` tool, previews the rename, shows you the summary and
+diff, and applies it only after you confirm.
+
+```bash
+"$PLUGIN/scripts/dotrush-cli.sh" rename preview src/Greeter.cs 3 14 Welcomer   # 1-based line and column
+"$PLUGIN/scripts/dotrush-cli.sh" rename apply 3f9a0c1b2d4e                      # the id from preview's plan: line
+```
+
+- `preview` sends `textDocument/rename` through the [request channel](#requests-the-request-channel), checks that
+  every edited range on disk still lies in an identifier with the old name, and saves a plan in the session dir
+  (`edits/<plan-id>.json`, with a sha256 per file, and the full diff in `edits/<plan-id>.diff`). It prints
+  `N edits in M files`, one line per file, the first 200 diff lines, `diff:` and `plan:`. A new name must be a valid
+  C# identifier; a reserved keyword needs `@`. `--timeout N` (default 60 s) bounds the wait for DotRush.
+- `apply` re-checks every file's hash and refuses if any changed since the preview, writing nothing. It writes each
+  file to a temp file (keeping BOM, line endings and file mode; a symlink's target is written), then moves all of
+  them into place, and sends `textDocument/didOpen` for each changed file so DotRush re-reads it from disk. It prints
+  `renamed <Old> to <New>: N edits in M files` and the changed paths.
+- Files outside the workspace root or under a `bin`/`obj` directory are marked `(outside workspace)` in the
+  preview; `apply` refuses them unless given `--outside-workspace`.
+- Plans belong to the server that produced them: a server restart clears `edits/`.
+
+Limits come from DotRush's rename: overloads, text in strings and comments, and file names are not renamed (a class
+in a same-named file keeps that file name), and only documents in loaded projects change. Claude Code does not
+learn of the writes by itself, so the skill re-reads the changed files before editing them further.
+
+## The plugin CLI
+
+`scripts/dotrush-cli.sh` runs `tools/DotRushCli`. On first use it builds the CLI with the .NET 10 SDK (a few
+seconds, `building the DotRush CLI` on stderr) into `${CLAUDE_PLUGIN_DATA}/cli/<hash of the tool sources>/`, so
+sessions on different plugin versions keep separate builds. The build runs from `tools/`, whose empty
+`Directory.*` files and location keep your repository's `global.json` and `Directory.Build.*` out of it. Concurrent
+sessions wait for one build, a failed build prints the end of `${CLAUDE_PLUGIN_DATA}/cli-build.log`, and builds for
+other sources are removed after a day unused. `DOTRUSH_CLI_DIR` runs a ready `DotRushCli.dll` from that directory
+and builds nothing.
+
+```bash
+"$PLUGIN/scripts/dotrush-cli.sh" session           # dir, workspace, proxy, load, target, publishes, channel
+"$PLUGIN/scripts/dotrush-cli.sh" session --dir     # just this session's dir (exit 1 when there is none)
+"$PLUGIN/scripts/dotrush-cli.sh" request textDocument/hover '{"textDocument":{"uri":"file:///abs/A.cs"},"position":{"line":2,"character":14}}'
+"$PLUGIN/scripts/dotrush-cli.sh" help
+```
+
+Exit status: 0 success, 1 error (a JSON-RPC error prints as `code: message`), 2 usage, 3 timeout. Errors go to
+stderr prefixed with `dotrush-cli:`.
+
 ## Injecting custom LSP messages (the proxy)
 
 The proxy forwards Claude ⇄ DotRush verbatim and injects newline-delimited JSON-RPC written to a FIFO,
 at frame boundaries under a lock — so injection never desyncs request/response pairing.
 
 The FIFO + log live in a **per-session** dir (`${CLAUDE_PLUGIN_DATA}/ws/sess-<hash>/`) so concurrent
-sessions never collide. Find the ones for the *current* session by matching the recorded session id
-(falling back to the workspace path when no session id is set):
+sessions never collide. Find the ones for the *current* session with the plugin CLI (see
+[Multiple sessions / projects / worktrees](#multiple-sessions--projects--worktrees) for how it matches):
 ```bash
-ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
-SID="${DOTRUSH_SESSION_ID:-$AGTERM_SESSION_ID}"
-HIT=""
-[ -n "$SID" ] && HIT=$(grep -lFx "$SID" "$ROOT"/*/ws/sess-*/session.txt 2>/dev/null | head -1)
-[ -z "$HIT" ] && HIT=$(grep -lFx "$PWD" "$ROOT"/*/ws/*/workspace.txt 2>/dev/null | head -1)
-WSDIR=$(dirname "$HIT")
+WSDIR=$("$PLUGIN/scripts/dotrush-cli.sh" session --dir)
 FIFO="$WSDIR/inject.fifo"     # inject here
 LOG="$WSDIR/proxy.log"        # INJECT events + server->client traffic
 ```
@@ -202,9 +254,23 @@ echo '{"method":"$/setTrace","params":{"value":"verbose"}}' > "$FIFO"
 tail -f "$LOG"
 ```
 
-Prefer **notifications** (no `id`, fire-and-forget, silently ignored if unknown). A **request** (with `id`)
-makes DotRush reply, and that unsolicited response flows back to Claude Code — only inject one if the
-client tolerates it.
+Echo into the FIFO only **notifications** (no `id`, fire-and-forget, silently ignored if unknown). Send requests
+through the request channel below, so their responses come back to you rather than to Claude Code.
+
+### Requests: the request channel
+
+A response whose `id` is the string `dotrush-cc:<uuid>` (a lowercase GUID) is not forwarded to Claude Code: the
+proxy writes its JSON-RPC body verbatim to `responses/<uuid>.json` in the session dir (via a temp file and a
+rename). Claude Code's integer ids never match, so the proxy keeps no request table; a `dotrush-cc:` id whose suffix
+is not a uuid is dropped and logged, so an id never becomes a path. The proxy creates `responses/` empty at start,
+and its presence marks a proxy that has the channel; it also removes `edits/`, the saved rename plans.
+
+`dotrush-cli.sh request <method> <params-json> [--timeout N]` does the whole exchange: it writes the request line to
+the FIFO, waits for the response file (default 60 s), prints the `result` as JSON on stdout and deletes the file.
+A JSON-RPC error prints `code: message` and exits 1. On timeout it injects `$/cancelRequest` for the id, deletes a
+response that arrives within a second, and exits 3. Response files older than 10 minutes are removed when a
+`request` or `rename` starts. Before sending, it requires a running proxy, `responses/`, and `load-completed`, and
+names the next step when one is missing (run a C# LSP operation, restart Claude Code, or pick a project).
 
 ### DotRush-specific injectable notifications
 
@@ -247,6 +313,11 @@ Notes (learned while verifying this):
 - **Server or profiling tools didn't install** → run `dotrush-profile.sh tools` to see the pin and whether it downloads
   or builds. A download needs `curl`/`unzip`; a build needs `git` and a .NET SDK and keeps its log in
   `${CLAUDE_PLUGIN_DATA}/<component>-build.log`. Run `install-dotrush.sh server` (or `diagnostics`) by hand and inspect `proxy.log`.
+- **Rename says "the running DotRush proxy predates the request channel"** (`session` shows
+  `channel: unavailable (older proxy)`) → the language server started before the plugin was updated. Restart Claude
+  Code. Diagnostics and project picking still work with the older proxy.
+- **The CLI does not build** → `dotrush-cli.sh` needs a .NET 10 SDK and prints the end of
+  `${CLAUDE_PLUGIN_DATA}/cli-build.log`; run `dotrush-cli.sh help` to retry.
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.
