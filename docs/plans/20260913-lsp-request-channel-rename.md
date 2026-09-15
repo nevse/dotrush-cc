@@ -271,12 +271,12 @@
 - Create: `tests/DotRushCli.Tests/FakeProxy.cs`
 - Create: `tests/DotRushCli.Tests/LspChannelTests.cs`
 
-- [ ] write `FakeProxy` test helper: temp session dir, `mkfifo`, a reader task that records lines and answers by writing `responses/<uuid>.json`; cleanup opens the FIFO for reading to release any writer stuck in `open`
-- [ ] write failing tests: result JSON printed and response file deleted; JSON-RPC error → `code: message`, exit 1; no response before `--timeout` → a `$/cancelRequest` line with the same id reaches the FIFO and a late response file is deleted, exit 3; invalid `<params-json>` → exit 2 with nothing written; stale `responses/*.json` older than 10 minutes removed on start
-- [ ] write failing test: a FIFO without a reader fails within the open timeout instead of hanging
-- [ ] implement `LspChannel` (id generation, single-write request line, background FIFO write with timeout, response polling, cancel and cleanup)
-- [ ] implement `request <method> <params-json> [--timeout N]` (default 60 s) after channel readiness
-- [ ] run tests - C# and Python suites must pass before task 6
+- [x] write `FakeProxy` test helper: temp session dir, `mkfifo`, a reader task that records lines and answers by writing `responses/<uuid>.json`; cleanup opens the FIFO for reading to release any writer stuck in `open`
+- [x] write failing tests: result JSON printed and response file deleted; JSON-RPC error → `code: message`, exit 1; no response before `--timeout` → a `$/cancelRequest` line with the same id reaches the FIFO and a late response file is deleted, exit 3; invalid `<params-json>` → exit 2 with nothing written; stale `responses/*.json` older than 10 minutes removed on start
+- [x] write failing test: a FIFO without a reader fails within the open timeout instead of hanging
+- [x] implement `LspChannel` (id generation, single-write request line, background FIFO write with timeout, response polling, cancel and cleanup)
+- [x] implement `request <method> <params-json> [--timeout N]` (default 60 s) after channel readiness
+- [x] run tests - C# and Python suites must pass before task 6
 
 ### Task 6: Add the e2e fixture and the request-channel checks
 
