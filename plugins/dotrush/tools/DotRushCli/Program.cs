@@ -24,6 +24,9 @@ public static class Program
     [
         new("session", Session.Synopsis, "print this session's DotRush runtime dir and its state (--dir: the dir only)",
             Session.Run),
+        new("request", RequestCommand.Synopsis,
+            "send an LSP request to this session's DotRush server and print its result as JSON (default timeout 60 s)",
+            RequestCommand.Run),
         new("help", "help", "print this help", (context, _) => PrintUsage(context.Stdout, ExitCode.Success)),
     ];
 
