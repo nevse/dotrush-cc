@@ -328,6 +328,54 @@ class ProfileHelperTests(unittest.TestCase):
         self.assertIn("holds no dotnet-trace.dll", rejected.stderr)
 
 
+def untagged_capture():
+    """Two 10 ms threads whose every sample carries the UNMANAGED_CODE_TIME tag.
+
+    Thread 7 works: App!Hot.Outer() with App!Hot.Inner() below it for 6 ms, then Outer alone for
+    4 ms. Thread 8 sits in App!Waiter.Park() for the whole capture.
+    """
+    frames = ["Process64 T (1)", "App!Hot.Outer()", "App!Hot.Inner()", "UNMANAGED_CODE_TIME", "App!Waiter.Park()"]
+
+    def opened(frame, at):
+        return {"type": "O", "frame": frame, "at": at}
+
+    def closed(frame, at):
+        return {"type": "C", "frame": frame, "at": at}
+
+    worker = [
+        opened(0, 0), opened(1, 0),
+        opened(2, 0), opened(3, 0), closed(3, 4), closed(2, 4),
+        opened(3, 4), closed(3, 6),
+        opened(2, 6), opened(3, 6), closed(3, 8), closed(2, 8),
+        opened(3, 8), closed(3, 10),
+        closed(1, 10), closed(0, 10),
+    ]
+    waiter = [opened(0, 0), opened(4, 0), opened(3, 0), closed(3, 10), closed(4, 10), closed(0, 10)]
+
+    def thread(name, events):
+        return {"type": "evented", "name": name, "unit": "milliseconds", "startValue": 0, "endValue": 10,
+                "events": events}
+
+    return {
+        "shared": {"frames": [{"name": name} for name in frames]},
+        "profiles": [thread("Thread (7)", worker), thread("Thread (8)", waiter)],
+    }
+
+
+def block(output, heading):
+    """Return the text of the report section whose heading starts with `heading`."""
+    return output.split("\n" + heading, 1)[1].split("\n\n", 1)[0]
+
+
+def summarize(document, *args):
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "trace.speedscope.json"
+        source.write_text(json.dumps(document), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(SUMMARIZE), str(source), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+
 class SpeedscopeTests(unittest.TestCase):
     def test_attributes_cpu_marker_to_managed_parent_and_separates_blocked_time(self):
         document = {
@@ -379,17 +427,77 @@ class SpeedscopeTests(unittest.TestCase):
         self.assertIn("100.00%\t8.00\tProfileTarget!HotPath.Run()", result)
         self.assertNotIn("CPU_TIME\n", result)
         self.assertNotIn("Process64 ProfileTarget", result)
+        # The blocked ReadLine stays out: the runtime tags samples, so the tag is trusted.
+        self.assertNotIn("ReadLine", block(result, "=== Top 10 functions by exclusive managed CPU"))
+        self.assertNotIn("Warning", result)
 
 
-    def test_reports_an_all_unmanaged_capture_instead_of_failing(self):
-        # An idle or all-interop target samples no managed frames. That is the answer the CPU
-        # skill needs — the capture was idle — so it must be reported, not raised as an error.
+    def test_ranks_on_stack_time_when_no_sample_is_tagged_managed(self):
+        # .NET 9 and 10.0.0-10.0.3 on macOS arm64 tag every sample unmanaged, even a pure managed
+        # loop. Dropping those samples left a ranking of the untagged gaps between events and
+        # discarded 100% of a 30 s capture's thread time, so the managed frames above the tag are
+        # ranked instead, the thread table shows which thread worked, and the report says why.
+        document = untagged_capture()
+        result = summarize(document, "--limit", "10")
+
+        self.assertIn("ManagedSampledTime\t0.00", result)
+        self.assertIn("UnmanagedOrBlockedTime\t20.00", result)
+        self.assertIn("ManagedOnStackTime\t20.00", result)
+        self.assertIn("Warning\tNo sample in the capture is tagged as running managed code", result)
+        self.assertIn("Runtime\tunknown", result)
+        threads = block(result, "=== Top 10 threads by stack changes")
+        self.assertLess(threads.index("Thread (7)"), threads.index("Thread (8)"))
+        self.assertIn("Thread (8)\t100.00% App!Waiter.Park()", threads)
+        exclusive = block(result, "=== Top 10 functions by exclusive on-stack time")
+        self.assertIn("50.00%\t10.00\tApp!Waiter.Park()", exclusive)
+        self.assertIn("30.00%\t6.00\tApp!Hot.Inner()", exclusive)
+        self.assertIn("50.00%\t10.00\tApp!Hot.Outer()", block(result, "=== Top 10 functions by inclusive on-stack time"))
+        self.assertNotIn("UNMANAGED_CODE_TIME", result)
+
+    def test_thread_option_ranks_one_thread_against_its_own_time(self):
+        result = summarize(untagged_capture(), "--thread", "7")
+
+        self.assertIn("SelectedThread\tThread (7)", result)
+        self.assertIn("SampledThreadTime\t10.00", result)
+        self.assertIn("ManagedOnStackTime\t10.00", result)
+        self.assertIn("60.00%\t6.00\tApp!Hot.Inner()", result)
+        self.assertNotIn("Waiter.Park", result)
+        self.assertNotIn("threads by", result)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.speedscope.json"
+            source.write_text(json.dumps(untagged_capture()), encoding="utf-8")
+            missing = subprocess.run(
+                [sys.executable, str(SUMMARIZE), str(source), "--thread", "9"], capture_output=True, text=True
+            )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no thread 9", missing.stderr)
+
+    def test_one_tagged_sample_keeps_untagged_waits_out_of_the_rankings(self):
+        document = untagged_capture()
+        frames = document["shared"]["frames"]
+        frames.append({"name": "CPU_TIME"})
+        cpu = len(frames) - 1
+        events = document["profiles"][0]["events"]
+        # Replace the first leaf of the working thread with a CPU_TIME tag.
+        events[3] = {"type": "O", "frame": cpu, "at": 0}
+        events[4] = {"type": "C", "frame": cpu, "at": 4}
+        result = summarize(document)
+
+        self.assertNotIn("Warning", result)
+        self.assertNotIn("ManagedOnStackTime", result)
+        self.assertIn("=== Top 30 threads by managed CPU ===", result)
+        self.assertIn("100.00%\t4.00\tApp!Hot.Outer()", result)
+        self.assertNotIn("Waiter.Park", block(result, "=== Top 30 functions by exclusive managed CPU"))
+
+    def test_reports_a_capture_without_managed_frames_instead_of_failing(self):
+        # A target parked in native code samples no managed frames. That is the answer the CPU
+        # skill needs, so it must be reported, not raised as an error.
         document = {
             "$schema": "https://www.speedscope.app/file-format-schema.json",
             "shared": {
                 "frames": [
                     {"name": "Process64 ProfileTarget (42)"},
-                    {"name": "System.Console!ReadLine()"},
                     {"name": "UNMANAGED_CODE_TIME"},
                 ]
             },
@@ -403,8 +511,6 @@ class SpeedscopeTests(unittest.TestCase):
                     "events": [
                         {"type": "O", "frame": 0, "at": 0},
                         {"type": "O", "frame": 1, "at": 0},
-                        {"type": "O", "frame": 2, "at": 0},
-                        {"type": "C", "frame": 2, "at": 10},
                         {"type": "C", "frame": 1, "at": 10},
                         {"type": "C", "frame": 0, "at": 10},
                     ],
@@ -425,6 +531,46 @@ class SpeedscopeTests(unittest.TestCase):
         self.assertIn("ManagedSampledTime\t0.00", completed.stdout)
         self.assertIn("UnmanagedOrBlockedTime\t10.00", completed.stdout)
         self.assertIn("(no managed samples)", completed.stdout)
+        self.assertNotIn("Warning", completed.stdout)
+
+    def test_names_the_runtime_from_the_corelib_path_in_the_nettrace(self):
+        corelib = "/usr/local/share/dotnet/shared/Microsoft.NETCore.App/10.0.0/System.Private.CoreLib.dll"
+        windows = r"C:\Program Files\dotnet\shared\Microsoft.NETCore.App\9.0.20\System.Private.CoreLib.dll"
+        cases = {
+            # Odd offset: the string need not start on an even byte of the file.
+            "unix": (b"Nettrace\x00\x01\x02" + corelib.encode("utf-16-le") + b"\x00\x00", "10.0.0"),
+            "windows": (b"\x00" * 8 + windows.encode("utf-16-le"), "9.0.20"),
+            "none": (b"Nettrace" + "App.dll".encode("utf-16-le"), "unknown"),
+        }
+        for name, (content, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                trace = Path(directory) / "t.nettrace"
+                trace.write_bytes(content)
+                self.assertIn(f"Runtime\t{expected}", summarize(untagged_capture(), "--nettrace", str(trace)))
+
+    def test_trace_report_reads_the_runtime_from_the_sibling_nettrace_and_passes_the_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "trace_20260101T000000Z_1_2"
+            speedscope = base.with_name(base.name + ".speedscope.json")
+            speedscope.write_text(json.dumps(untagged_capture()), encoding="utf-8")
+            corelib = "/dotnet/shared/Microsoft.NETCore.App/10.0.3/System.Private.CoreLib.dll"
+            base.with_name(base.name + ".nettrace").write_bytes(corelib.encode("utf-16-le"))
+            environment = {"PATH": os.environ.get("PATH", ""), "HOME": directory}
+
+            def run(*args):
+                return subprocess.run(
+                    ["bash", str(PROFILE_SH), "trace-report", str(speedscope), *args],
+                    capture_output=True, text=True, env=environment,
+                )
+
+            ranked = run("5", "7")
+            rejected = run("5", "Thread (7)")
+
+        self.assertEqual(ranked.returncode, 0, ranked.stderr)
+        self.assertIn("Runtime\t10.0.3", ranked.stdout)
+        self.assertIn("SelectedThread\tThread (7)", ranked.stdout)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("expected a numeric thread id", rejected.stderr)
 
     def test_separates_wall_clock_from_the_thread_summed_total(self):
         # Two threads covering the same 10ms window: the spans sum to 20 but only 10ms elapsed.

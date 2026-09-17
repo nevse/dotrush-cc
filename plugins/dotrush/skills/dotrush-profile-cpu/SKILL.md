@@ -29,13 +29,19 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace <PID> 00:00:30 [OUTPUT_DIR]
    ```
 
-   Reproduce the slow operation during that interval when it is within scope. Start collection just before the workload and keep idle time outside the capture where practical. The helper writes `.nettrace`, `.speedscope.json`, and `.top30.txt` artifacts and prints their absolute paths. The text report opens with `Threads`, `WallClockDuration` (the capture window) and the thread-summed `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime`, then gives exclusive and inclusive managed-CPU rankings.
+   Reproduce the slow operation during that interval when it is within scope. Start collection just before the workload and keep idle time outside the capture where practical. The helper writes `.nettrace`, `.speedscope.json`, and `.top30.txt` artifacts and prints their absolute paths. The text report opens with `Runtime` (the target's .NET version, `unknown` without the `.nettrace`), `Threads`, `WallClockDuration` (the capture window) and the thread-summed `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime`, then gives a thread table (stack changes, weight and top function per thread) and exclusive and inclusive managed-CPU rankings.
 
-4. Read the text report. If a different list size is useful, run:
+4. Read the text report. If a different list size is useful, or one thread should be ranked alone, run the command below; `THREAD_ID` is the number in a `Thread (<id>)` row of the thread table, and without it every thread is ranked:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace-report <TRACE.nettrace> 50
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace-report <TRACE.nettrace> 50 [THREAD_ID]
    ```
+
+   **If the header has a `Warning` line and `ManagedOnStackTime`, no sample was tagged as running managed code.** Either the target was blocked or in native code for the whole capture, or its runtime tags every sample as unmanaged even in a managed loop — .NET 9 and 10.0.0–10.0.3 do on macOS arm64 (8.0 and 10.0.4+ do not). The rankings then measure time on stack, and a thread parked in a wait counts as fully as a working one, so on a service most of the total is idle threads. In that case:
+
+   - Find the working threads in the thread table: many stack changes and a top function that is not a wait (`Monitor.Wait`, `WaitHandle.Wait*`, `LowLevelLifoSemaphore.WaitForSignal`, `ManualResetEventSlim.Wait`, `SocketPal.Poll`, `Thread.Sleep`, `?!?`). Rank each with `trace-report <TRACE.nettrace> 50 <THREAD_ID>`, and use a count large enough to get past the framework frames that sit at 100% inclusive.
+   - Report the numbers as on-stack time of that thread, not CPU, and name the `Runtime` line. For CPU-only numbers, suggest running the target on a runtime that tags samples, when that is possible.
+   - If every thread sits in a wait, the capture was idle: say so and re-capture while the workload runs rather than diagnosing the waits.
 
 5. Report the PID, command/workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
 
@@ -45,7 +51,7 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    - To get the real attribution, re-run the target with `DOTNET_TieredCompilation=0` and `DOTNET_JitNoInline=1` set in its environment, and say that this itself changes performance — it is a diagnostic run for attribution, not a measurement of production behaviour.
    - Never conclude that a large method needs optimizing just because it absorbed its callees' samples.
 
-   `WallClockDuration` is the capture window. `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime` are summed across the `Threads` count, so on a multi-threaded target they exceed the wall clock and must not be reported as elapsed time. Percentages are shares of `ManagedSampledTime`. Method names print without their IL parameter lists unless two rows would otherwise read identically.
+   `WallClockDuration` is the capture window. `SampledThreadTime`, `ManagedSampledTime` and `UnmanagedOrBlockedTime` are summed across the `Threads` count, so on a multi-threaded target they exceed the wall clock and must not be reported as elapsed time. Percentages are shares of `ManagedSampledTime`, or of `ManagedOnStackTime` when that line is present. Method names print without their IL parameter lists unless two rows would otherwise read identically.
 
 ## Boundaries
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "dotrush",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "DotRush C# LSP for Claude Code with live LSP injection, semantic rename, solution diagnostics and .NET CPU/managed-memory profiling skills. Auto-installs required tools on first use.",
   "author": {
     "name": "Eugene Novikov"

@@ -1,5 +1,16 @@
 # Changelog
 
+### 0.7.1
+- The CPU report no longer discards a capture whose samples are all tagged unmanaged. .NET 9 and 10.0.0–10.0.3 on
+  macOS arm64 tag every sample that way, even in a managed loop, and the report built its rankings from the
+  untagged gaps between events (0.09 ms of a 360 s capture). When no sample in a capture is tagged as managed, the
+  report now ranks the managed frames above the tag by time on stack, adds `ManagedOnStackTime` and a `Warning`
+  line, and the CPU skill says how to read it. A capture with at least one managed sample is ranked as before.
+- The report opens with `Runtime`, the target's .NET version read from the `.nettrace` (`unknown` when there is
+  none), and has a thread table: stack changes, weight and top function per thread. `trace-report` takes an
+  optional thread id to rank that thread alone (`summarize-speedscope.py --thread`), and reads the runtime from the
+  `.nettrace` next to a `.speedscope.json` it is given.
+
 ### 0.7.0
 - Added `dotrush-rename`, a semantic rename of a C# symbol across the loaded solution through DotRush's Roslyn
   rename. Claude locates the symbol with the `LSP` tool, runs `rename preview`, shows the per-file edit counts and

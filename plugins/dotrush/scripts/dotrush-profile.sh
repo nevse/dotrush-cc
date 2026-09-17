@@ -12,7 +12,7 @@ Usage:
   dotrush-profile.sh tools
   dotrush-profile.sh ps [trace|gcdump]
   dotrush-profile.sh trace <pid> [duration] [output-dir]
-  dotrush-profile.sh trace-report <trace.nettrace> [count]
+  dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
   dotrush-profile.sh heap-diff <baseline.gcdump|.gcdump.json> <current.gcdump|.gcdump.json> [count]
@@ -23,6 +23,7 @@ Defaults:
   output-dir  $DOTRUSH_PROFILE_OUTPUT_DIR, else $CLAUDE_PLUGIN_DATA/profiles,
               else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
   count       30
+  thread-id   all threads; the id from a report's thread table ranks that thread alone
 
 Tools:
   dotnet-trace and dotnet-gcdump are DotRush's own builds at the ref pinned in
@@ -172,10 +173,14 @@ ensure_gcdump_json() {
   absolute_path "$graph"
 }
 
+# The .nettrace, when there is one, names the target's runtime, which the report needs to explain a
+# capture whose samples all read as unmanaged.
 write_trace_report() {
-  local speedscope_file="$1"
-  local count="$2"
-  python3 "$SCRIPT_DIR/summarize-speedscope.py" "$speedscope_file" --limit "$count"
+  local speedscope_file="$1" count="$2" trace_file="${3:-}" thread="${4:-}"
+  local args=("$speedscope_file" --limit "$count")
+  [[ -n "$trace_file" && -f "$trace_file" ]] && args+=(--nettrace "$trace_file")
+  [[ -n "$thread" ]] && args+=(--thread "$thread")
+  python3 "$SCRIPT_DIR/summarize-speedscope.py" "${args[@]}"
 }
 
 write_heap_report() {
@@ -257,7 +262,7 @@ case "$command_name" in
     [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
     echo "SPEEDSCOPE=$speedscope_file"
 
-    if write_trace_report "$speedscope_file" 30 > "$report_file"; then
+    if write_trace_report "$speedscope_file" 30 "$trace_file" > "$report_file"; then
       echo "REPORT=$report_file"
     else
       rm -f "$report_file"
@@ -268,10 +273,14 @@ case "$command_name" in
   trace-report)
     trace_file="${2:-}"
     count="${3:-30}"
+    thread="${4:-}"
     [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
     require_count "$count"
+    [[ -z "$thread" || "$thread" =~ ^[0-9]+$ ]] || fail "expected a numeric thread id, got '$thread'"
     if [[ "$trace_file" == *.speedscope.json ]]; then
       speedscope_file="$trace_file"
+      # The name `trace` gives its files; a speedscope file from elsewhere simply has no runtime line.
+      trace_file="${trace_file%.speedscope.json}.nettrace"
     else
       speedscope_file="$(speedscope_report_path "$trace_file")"
       if [[ ! -f "$speedscope_file" ]]; then
@@ -280,7 +289,7 @@ case "$command_name" in
         [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
       fi
     fi
-    write_trace_report "$speedscope_file" "$count"
+    write_trace_report "$speedscope_file" "$count" "$trace_file" "$thread"
     ;;
 
   heap)
