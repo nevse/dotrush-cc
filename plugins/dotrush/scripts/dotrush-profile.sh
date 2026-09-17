@@ -12,6 +12,7 @@ Usage:
   dotrush-profile.sh tools
   dotrush-profile.sh ps [trace|gcdump]
   dotrush-profile.sh trace <pid> [duration] [output-dir]
+  dotrush-profile.sh trace --launch [duration] [output-dir] -- <command> [args...]
   dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
@@ -24,6 +25,13 @@ Defaults:
               else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
   count       30
   thread-id   all threads; the id from a report's thread table ranks that thread alone
+
+Launch:
+  trace --launch starts <command> suspended and traces it from its first instruction until it
+  exits or the duration ends, whichever comes first; at the duration it is killed. Its output
+  goes to stderr and its exit code is printed as EXIT=. The command must itself be the .NET
+  process doing the work: SDK commands such as `dotnet test` or `dotnet run` are refused, since
+  the processes they start inherit the suspended diagnostic port and hang.
 
 Tools:
   dotnet-trace and dotnet-gcdump are DotRush's own builds at the ref pinned in
@@ -183,6 +191,35 @@ write_trace_report() {
   python3 "$SCRIPT_DIR/summarize-speedscope.py" "${args[@]}"
 }
 
+# The runtime is launched suspended on a diagnostic port whose address it passes on in the
+# environment, so any .NET process the command starts suspends too and waits for a resume that never
+# comes. The SDK's own verbs all work that way; a .dll, `exec` or an app's own executable does not.
+require_launch_command() {
+  local program="$1" first="${2:-}"
+  [[ "$(basename "$program")" == dotnet ]] || return 0
+  [[ "$first" == exec || "$first" == *.dll ]] && return 0
+  fail "cannot launch 'dotnet ${first}': the processes it starts would hang on the suspended diagnostic port; launch the app itself (dotnet <app.dll>, or its executable), or a test project that builds to an executable (Microsoft.Testing.Platform) with its filter"
+}
+
+# Converts a captured trace and writes its report next to it, printing each path as it appears.
+finish_trace() {
+  local trace_file="$1" speedscope_file report_file
+  speedscope_file="$(speedscope_report_path "$trace_file")"
+  report_file="${trace_file%.nettrace}.top30.txt"
+
+  run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
+  # ConvertToFormat swallows its own failure and still exits 0, so check the file itself.
+  [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
+  echo "SPEEDSCOPE=$speedscope_file"
+
+  if write_trace_report "$speedscope_file" 30 "$trace_file" > "$report_file"; then
+    echo "REPORT=$report_file"
+  else
+    rm -f "$report_file"
+    fail "report generation failed; the artifacts printed above are intact"
+  fi
+}
+
 write_heap_report() {
   python3 "$SCRIPT_DIR/analyze-gcdump.py" report "$1" --limit "$2"
 }
@@ -235,39 +272,57 @@ case "$command_name" in
     ;;
 
   trace)
-    pid="${2:-}"
-    duration="${3:-00:00:30}"
-    require_pid "$pid"
+    launch=""
+    if [[ "${2:-}" == --launch ]]; then
+      launch=1
+      shift 2
+      positional=()
+      while [[ $# -gt 0 && "$1" != -- ]]; do
+        positional+=("$1")
+        shift
+      done
+      [[ $# -gt 0 ]] || fail "trace --launch needs -- before the command to launch"
+      shift
+      [[ $# -gt 0 ]] || fail "trace --launch needs a command after --"
+      (( ${#positional[@]} <= 2 )) || fail "trace --launch takes at most a duration and an output dir before --, got: ${positional[*]}"
+      require_launch_command "$@"
+      duration="${positional[0]:-00:00:30}"
+      requested_dir="${positional[1]:-}"
+      label="launch"
+    else
+      pid="${2:-}"
+      duration="${3:-00:00:30}"
+      requested_dir="${4:-}"
+      require_pid "$pid"
+      label="$pid"
+    fi
     require_duration "$duration"
-    destination="$(output_dir "${4:-}")"
+    destination="$(output_dir "$requested_dir")"
     mkdir -p "$destination"
     destination="$(cd "$destination" && pwd)"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     # $$ separates concurrent captures of the same PID within one second.
-    base="$destination/trace_${stamp}_${pid}_$$"
-    trace_file="$base.nettrace"
-    speedscope_file="$(speedscope_report_path "$trace_file")"
-    report_file="$base.top30.txt"
+    trace_file="$destination/trace_${stamp}_${label}_$$.nettrace"
     use_bundle
 
     # Each artifact path is printed as soon as it exists: a later step failing must not discard
     # the pointer to a capture that already cost an attach.
     # The tools narrate to stdout; stdout here is the KEY=value contract the skills parse, so
     # their chatter goes to stderr alongside our own progress messages.
-    run_tool dotnet-trace collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
-    echo "TRACE=$trace_file"
-
-    run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
-    # ConvertToFormat swallows its own failure and still exits 0, so check the file itself.
-    [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
-    echo "SPEEDSCOPE=$speedscope_file"
-
-    if write_trace_report "$speedscope_file" 30 "$trace_file" > "$report_file"; then
-      echo "REPORT=$report_file"
+    if [[ -n "$launch" ]]; then
+      # dotnet-trace exits with the child's code, so a failing command still leaves a trace; the
+      # file, not the code, says whether the capture worked.
+      status=0
+      run_tool dotnet-trace collect --duration "$duration" --output "$trace_file" --show-child-io \
+        -- "$@" </dev/null >&2 || status=$?
+      [[ -f "$trace_file" ]] || fail "dotnet-trace wrote no $trace_file (exit $status)"
+      echo "TRACE=$trace_file"
+      echo "EXIT=$status"
     else
-      rm -f "$report_file"
-      fail "report generation failed; the artifacts printed above are intact"
+      run_tool dotnet-trace collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
+      echo "TRACE=$trace_file"
     fi
+    finish_trace "$trace_file"
     ;;
 
   trace-report)

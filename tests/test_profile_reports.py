@@ -659,6 +659,125 @@ class SpeedscopeTests(unittest.TestCase):
         self.assertIn("no profiles found", completed.stderr)
 
 
+# Stands in for `dotnet <tool>.dll ...`: logs each call, and for `collect` writes the --output file
+# (unless STUB_NO_TRACE is set) and exits with STUB_EXIT; `convert` writes the speedscope file.
+FAKE_DOTNET = r"""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(args) + "\n")
+output = args[args.index("--output") + 1]
+if args[1] == "collect":
+    if not os.environ.get("STUB_NO_TRACE"):
+        open(output, "wb").close()
+    print("collect chatter")
+    sys.exit(int(os.environ.get("STUB_EXIT", "0")))
+if args[1] == "convert":
+    with open(output[: -len(".nettrace")] + ".speedscope.json", "w", encoding="utf-8") as target:
+        target.write(os.environ["STUB_SPEEDSCOPE"])
+"""
+
+
+class TraceLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        dotnet = self.root / "dotnet-stub"
+        dotnet.write_text(FAKE_DOTNET, encoding="utf-8")
+        dotnet.chmod(0o755)
+        self.log = self.root / "calls.log"
+        self.out = self.root / "out"
+        self.env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.root),
+            "DOTRUSH_DOTNET": str(dotnet),
+            "DOTRUSH_DIAGNOSTICS_DIR": str(make_bundle(self.root / "bundle")),
+            "STUB_LOG": str(self.log),
+            "STUB_SPEEDSCOPE": json.dumps(untagged_capture()),
+        }
+
+    def trace(self, *args, **env):
+        return subprocess.run(
+            ["bash", str(PROFILE_SH), "trace", *args],
+            capture_output=True, text=True, env={**self.env, **env},
+        )
+
+    def calls(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_launches_the_command_and_reports_its_exit_code_with_the_artifacts(self):
+        # A failing command (a red test) still leaves a trace worth reading.
+        result = self.trace("--launch", "00:00:10", str(self.out), "--", "./App", "--filter", "Name=Spin",
+                            STUB_EXIT="3")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        keys = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(list(keys), ["TRACE", "EXIT", "SPEEDSCOPE", "REPORT"])
+        self.assertEqual(keys["EXIT"], "3")
+        self.assertRegex(Path(keys["TRACE"]).name, r"^trace_\d{8}T\d{6}Z_launch_\d+\.nettrace$")
+        self.assertEqual(Path(keys["TRACE"]).parent, self.out)
+        self.assertIn("SampledThreadTime", Path(keys["REPORT"]).read_text(encoding="utf-8"))
+        self.assertIn("collect chatter", result.stderr)
+        collect = self.calls()[0]
+        self.assertEqual(collect[1:4], ["collect", "--duration", "00:00:10"])
+        self.assertNotIn("--process-id", collect)
+        self.assertEqual(collect[collect.index("--"):], ["--", "./App", "--filter", "Name=Spin"])
+
+    def test_defaults_the_duration_and_output_dir(self):
+        result = self.trace("--launch", "--", "dotnet", "App.dll", DOTRUSH_PROFILE_OUTPUT_DIR=str(self.out))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"TRACE={self.out}/", result.stdout)
+        self.assertIn("00:00:30", self.calls()[0])
+
+    def test_fails_with_the_exit_code_when_no_trace_was_written(self):
+        result = self.trace("--launch", "00:00:10", str(self.out), "--", "./missing", STUB_EXIT="3",
+                            STUB_NO_TRACE="1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("(exit 3)", result.stderr)
+
+    def test_refuses_sdk_commands_whose_children_would_hang(self):
+        # Every .NET process the command starts inherits the suspended diagnostic port and never resumes.
+        for command in (["dotnet", "test"], ["/usr/local/share/dotnet/dotnet", "run", "--project", "x"], ["dotnet"]):
+            with self.subTest(command=command):
+                result = self.trace("--launch", "--", *command)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("would hang on the suspended diagnostic port", result.stderr)
+        for command in (["dotnet", "exec", "App.dll"], ["dotnet", "bin/App.dll", "arg"], ["./dotnet-app"]):
+            with self.subTest(command=command):
+                self.assertEqual(self.trace("--launch", str(self.out), "--", *command).returncode, 1)
+                self.assertEqual(self.trace("--launch", "00:00:01", str(self.out), "--", *command).returncode, 0)
+        self.assertEqual(len(self.calls()), 6)
+
+    def test_rejects_malformed_launch_arguments_before_running_anything(self):
+        cases = {
+            ("--launch",): "needs -- before the command",
+            ("--launch", "00:00:05", str(self.out)): "needs -- before the command",
+            ("--launch", "--"): "needs a command after --",
+            ("--launch", "00:00:05", "a", "b", "--", "./App"): "at most a duration and an output dir",
+            ("--launch", "00:30", "--", "./App"): "mm:ss is rejected",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                result = self.trace(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_attach_still_takes_a_pid(self):
+        result = self.trace("42", "00:00:10", str(self.out))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"TRACE=.*_42_\d+\.nettrace\nSPEEDSCOPE=")
+        self.assertNotIn("EXIT=", result.stdout)
+        self.assertEqual(self.calls()[0][1:4], ["collect", "--process-id", "42"])
+        self.assertNotIn("--", self.calls()[0])
+
+
 def dead_pid():
     """A PID that belonged to a process which has already exited."""
     process = subprocess.Popen(["true"])

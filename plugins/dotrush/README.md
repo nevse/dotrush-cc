@@ -26,7 +26,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
-| `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
+| `skills/dotrush-profile-cpu/` | attaches `dotnet-trace` or launches the target under it, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
 ## The server auto-installs
@@ -127,7 +127,8 @@ pinned 2026.09) has no call-hierarchy handler. Use `findReferences` instead.
 The plugin mirrors DotRush's profiling split with two Claude skills:
 
 - Ask Claude to **profile CPU**, find a hot path, investigate high CPU/latency, or invoke
-  `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval and creates a `.nettrace`, a
+  `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval, or launches a short-lived program
+  or an executable test project under it (`trace --launch … -- <command>`), and creates a `.nettrace`, a
   `.speedscope.json`, and a text top-method report.
 - Ask Claude to **profile managed memory**, investigate a suspected leak, compare heap snapshots, or invoke
   `dotrush-profile-memory`. It collects a `.gcdump` together with its heap graph as `.gcdump.json`, reports

@@ -1,6 +1,6 @@
 ---
 name: dotrush-profile-cpu
-description: Profile CPU usage, hot paths, throughput, or latency in a running .NET application with dotnet-trace, then interpret the trace report. Use for high CPU, slow requests, regressions, flame graphs, or when the user asks to attach a trace profiler. Do not use for managed-memory growth or leak analysis.
+description: Profile CPU usage, hot paths, throughput, or latency in a running .NET application, or in a short-lived .NET program or test it launches, with dotnet-trace, then interpret the trace report. Use for high CPU, slow requests, regressions, flame graphs, profiling a benchmark or a single test, or when the user asks to attach a trace profiler. Do not use for managed-memory growth or leak analysis.
 ---
 
 # Profile .NET CPU usage
@@ -13,7 +13,15 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 
 ## Workflow
 
-1. If no PID was supplied, discover attachable processes:
+1. **Launch instead of attaching when the workload is short-lived or can be started on demand** — a microbenchmark, a console tool, a single test. The helper starts the command suspended, traces it from startup, and stops when it exits or the duration ends (at the duration it kills the command):
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace --launch 00:02:00 [OUTPUT_DIR] -- <COMMAND> [ARGS...]
+   ```
+
+   The command must itself be the .NET process doing the work: `dotnet bin/Release/net10.0/App.dll`, `dotnet exec …`, or the app's own executable. The helper refuses `dotnet test`, `dotnet run` and other SDK commands, because every .NET process they start inherits the suspended diagnostic port and hangs. For a single test, run a test project that builds to an executable (Microsoft.Testing.Platform: `EnableNUnitRunner`, `EnableMSTestRunner`, xUnit v3) directly with its filter, for example `-- tests/App.Tests/bin/Release/net10.0/App.Tests --filter "Name=Spin"` for NUnit; build it in Release first. A VSTest-only test project has no such entry point: attach to its `testhost` instead (step 2), or ask the user. Choose a duration that covers the whole run, since hitting it kills the command mid-way; the command's output goes to stderr, and `EXIT=` on stdout is its exit code (a failing test still leaves a usable trace; `0` also follows a kill at the duration). Then continue at step 4 with the printed artifacts. The capture includes runtime startup and JIT, so make the measured loop long enough to dominate them.
+
+2. Otherwise, if no PID was supplied, discover attachable processes:
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" ps trace
@@ -21,9 +29,9 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 
    Select only an unambiguous process. Otherwise ask the user.
 
-2. Prefer a warmed-up Release build for meaningful measurements. Note when the target is a Debug build, still warming up, idle, or sharing the machine with noisy workloads.
+3. Prefer a warmed-up Release build for meaningful measurements. Note when the target is a Debug build, still warming up, idle, or sharing the machine with noisy workloads.
 
-3. Collect a 30-second trace by default. Keep collection at two minutes or less unless the user explicitly asks for longer. Always write the duration as `hh:mm:ss` with `hh` 00-23 — never abbreviate to `mm:ss` (`dotnet-trace` reads `00:30` as `hh:mm`, 30 minutes) and never carry hours past 23 (it reads `24:00:00` as `dd:hh:mm`, 24 days). The helper rejects both. For a day or more, use `dd:hh:mm:ss`. For a production, remote, containerized, or otherwise sensitive target, state the expected interval and confirm the target before attaching.
+   Collect a 30-second trace by default. Keep collection at two minutes or less unless the user explicitly asks for longer. Always write the duration as `hh:mm:ss` with `hh` 00-23 — never abbreviate to `mm:ss` (`dotnet-trace` reads `00:30` as `hh:mm`, 30 minutes) and never carry hours past 23 (it reads `24:00:00` as `dd:hh:mm`, 24 days). The helper rejects both. For a day or more, use `dd:hh:mm:ss`. For a production, remote, containerized, or otherwise sensitive target, state the expected interval and confirm the target before attaching.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace <PID> 00:00:30 [OUTPUT_DIR]
@@ -43,7 +51,7 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    - Report the numbers as on-stack time of that thread, not CPU, and name the `Runtime` line. For CPU-only numbers, suggest running the target on a runtime that tags samples, when that is possible.
    - If every thread sits in a wait, the capture was idle: say so and re-capture while the workload runs rather than diagnosing the waits.
 
-5. Report the PID, command/workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
+5. Report the PID or launched command, workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
 
    **Expect inlining, and say so rather than reporting the caller as the hot method.** Step 2 asks for a Release build, and the JIT inlines small methods into their callers there, so their frames do not exist in the trace at all — their time is attributed to the caller. The signature is a method with high *exclusive* time and few or no callees beneath it, often something as coarse as `Program.Main()` or a request handler. Reporting "`Main` is hot" is true and useless. When you see it:
 

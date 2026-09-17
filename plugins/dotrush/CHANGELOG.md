@@ -1,5 +1,13 @@
 # Changelog
 
+### 0.7.2
+- `dotrush-profile.sh trace --launch [duration] [output-dir] -- <command...>` starts the command under
+  `dotnet-trace` and traces it from startup until it exits or the duration ends, so a microbenchmark or a single
+  test no longer needs a background run, a `ps` search and a timed attach. It prints the command's exit code as
+  `EXIT=`, and refuses `dotnet test`, `dotnet run` and other SDK commands: the .NET processes they start inherit the
+  suspended diagnostic port and hang. The CPU skill launches when the workload is short-lived, running a
+  Microsoft.Testing.Platform test project's executable with its filter for a single test.
+
 ### 0.7.1
 - The CPU report no longer discards a capture whose samples are all tagged unmanaged. .NET 9 and 10.0.0–10.0.3 on
   macOS arm64 tag every sample that way, even in a managed loop, and the report built its rankings from the
