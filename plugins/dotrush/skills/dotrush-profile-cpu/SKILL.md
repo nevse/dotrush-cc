@@ -24,10 +24,10 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 2. Otherwise, if no PID was supplied, discover attachable processes:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" ps trace
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" ps trace [--filter <TEXT>]
    ```
 
-   Select only an unambiguous process. Otherwise ask the user.
+   Each row has `PID`, `ELAPSED` (time since the process started), `NAME`, `ASSEMBLY` (the first `.dll`/`.exe` argument, so processes started through the `dotnet` host differ) and `COMMAND` (the command line, its tail when long). `--filter` keeps rows whose name, path or command line contains the text, ignoring case — for example `--filter testhost` or the project name; with no match it exits 1 and says how many processes were listed. Tell processes apart by assembly and arguments, and by `ELAPSED` when one was just started. Select only an unambiguous process. Otherwise ask the user, showing those columns.
 
 3. Prefer a warmed-up Release build for meaningful measurements. Note when the target is a Debug build, still warming up, idle, or sharing the machine with noisy workloads.
 
@@ -51,7 +51,15 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    - Report the numbers as on-stack time of that thread, not CPU, and name the `Runtime` line. For CPU-only numbers, suggest running the target on a runtime that tags samples, when that is possible.
    - If every thread sits in a wait, the capture was idle: say so and re-capture while the workload runs rather than diagnosing the waits.
 
-5. Report the PID or launched command, workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
+5. **Compare two captures for a before/after question** — a fix, a regression, a configuration change. Capture both the same way (same workload, duration and build configuration; `trace --launch` makes that easy), then:
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace-diff <BASELINE.nettrace> <CURRENT.nettrace> 30 [BASELINE_THREAD_ID CURRENT_THREAD_ID]
+   ```
+
+   It ranks functions by `Change`: the current share minus the baseline share of each capture's own total, in percentage points, since two captures differ in length and thread count; `BaselineWeight` and `CurrentWeight` are the raw times. The header gives both totals (`ManagedSampledTime 1200.00 -> 300.00`) and both `Runtime`s. A negative change means the function takes a smaller part of the work, not necessarily less time: when the whole run got faster, read the totals and weights too, and report the drop in the total as the headline. If either capture has no managed-tagged sample, the header has a `Warning` and both are compared by time on stack (see step 4); then compare one working thread from each capture by passing both thread ids, since thread ids differ between processes.
+
+6. Report the PID or launched command, workload, duration, build/configuration caveats, artifact paths, and the strongest findings. Distinguish exclusive hot methods from inclusive callers. Prioritize application frames; runtime initialization, EventSource setup, terminal I/O, and waiting frames can be measurement noise. If they dominate, verify that the workload actually overlapped the capture and repeat once after warm-up rather than diagnosing the noise. Sampling shows where sampled CPU stacks spend time; it does not by itself prove wall-clock latency, allocation volume, or causality. Async state-machine frames such as `MoveNext` should be mapped back to their owning method when possible.
 
    **Expect inlining, and say so rather than reporting the caller as the hot method.** Step 2 asks for a Release build, and the JIT inlines small methods into their callers there, so their frames do not exist in the trace at all — their time is attributed to the caller. The signature is a method with high *exclusive* time and few or no callees beneath it, often something as coarse as `Program.Main()` or a request handler. Reporting "`Main` is hot" is true and useless. When you see it:
 

@@ -1,6 +1,6 @@
 ---
 worth: later
-where: plugins/dotrush/scripts/dotrush-profile.sh:273
+where: plugins/dotrush/scripts/dotrush-profile.sh:377
 added: 2026-09-17
 ---
 # CPU report has flat rankings only, no call tree

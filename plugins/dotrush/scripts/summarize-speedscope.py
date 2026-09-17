@@ -197,57 +197,147 @@ def print_ranking(title: str, values: collections.Counter[str], total: float, li
         print(f"{percent_text}\t{value:.2f}\t{shown[name]}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("speedscope", type=Path)
-    parser.add_argument("--limit", type=int, default=30)
-    parser.add_argument("--nettrace", type=Path, help="the trace the file was converted from, to name the runtime")
-    parser.add_argument("--thread", help="rank only this thread, by the id in its 'Thread (<id>)' name")
-    args = parser.parse_args()
-    if args.limit < 1:
-        parser.error("--limit must be positive")
-    if args.thread is not None and not args.thread.isdigit():
-        parser.error(f"--thread must be a numeric thread id, got {args.thread!r}")
+class Capture:
+    """One speedscope file: its threads, the totals of the selected ones, and how they are to be ranked."""
 
-    document = json.loads(args.speedscope.read_text(encoding="utf-8"))
-    names = [frame.get("name", "<unnamed>") for frame in document["shared"]["frames"]]
-    threads = [Thread(profile, names) for profile in document.get("profiles", [])]
-    if not threads:
-        raise ValueError(f"no profiles found in {args.speedscope}")
-    units = {profile.get("unit", "unknown") for profile in document["profiles"]}
-    starts = [float(profile.get("startValue", 0)) for profile in document["profiles"]]
-    ends = [float(profile.get("endValue", 0)) for profile in document["profiles"]]
+    def __init__(self, path: Path, thread: str | None, nettrace: Path | None) -> None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        names = [frame.get("name", "<unnamed>") for frame in document["shared"]["frames"]]
+        profiles = document.get("profiles", [])
+        self.path = path
+        self.threads = [Thread(profile, names) for profile in profiles]
+        if not self.threads:
+            raise ValueError(f"no profiles found in {path}")
+        units = {profile.get("unit", "unknown") for profile in profiles}
+        self.unit = units.pop() if len(units) == 1 else "mixed-units"
+        self.wall_clock = max(float(p.get("endValue", 0)) for p in profiles) - min(
+            float(p.get("startValue", 0)) for p in profiles
+        )
+        self.totals = Totals()
+        for item in self.threads:
+            self.totals.add(item.totals)
+        # Without a single sample tagged managed the tag carries no information (see CORELIB_SUFFIXES),
+        # so rank what was on the stack rather than a ranking of untagged gaps, or none at all. Decided
+        # over the whole capture, so a thread picked with --thread is measured the same way.
+        self.untagged = self.totals.cpu_tagged == 0 and self.totals.unmanaged_on_stack > 0
+        self.selected = self.threads
+        if thread is not None:
+            self.selected = [item for item in self.threads if item.id == thread]
+            if not self.selected:
+                raise ValueError(f"no thread {thread} in {path}")
+            self.totals = Totals()
+            for item in self.selected:
+                self.totals.add(item.totals)
+        self.runtime = runtime_version(nettrace) if nettrace else None
 
-    totals = Totals()
-    for thread in threads:
-        totals.add(thread.totals)
-    # Without a single sample tagged managed the tag carries no information (see CORELIB_SUFFIXES),
-    # so rank what was on the stack rather than a ranking of untagged gaps, or none at all. Decided
-    # over the whole capture, so a thread picked with --thread is measured the same way.
-    on_stack = totals.cpu_tagged == 0 and totals.unmanaged_on_stack > 0
+    def rankings(self, on_stack: bool) -> tuple[collections.Counter[str], collections.Counter[str], float]:
+        """Exclusive and inclusive weights and their total, as managed CPU or as time on stack."""
+        totals = self.totals
+        if not on_stack:
+            return totals.exclusive, totals.inclusive, totals.managed
+        if self.untagged:
+            return totals.unmanaged_exclusive, totals.unmanaged_inclusive, totals.unmanaged_on_stack
+        # A capture with tags, compared against one without: on-stack time is every sample, whatever its tag.
+        return (
+            totals.exclusive + totals.unmanaged_exclusive,
+            totals.inclusive + totals.unmanaged_inclusive,
+            totals.managed + totals.unmanaged_on_stack,
+        )
 
-    selected = threads
-    if args.thread is not None:
-        selected = [thread for thread in threads if thread.id == args.thread]
-        if not selected:
-            raise ValueError(f"no thread {args.thread} in {args.speedscope}")
-        totals = Totals()
-        for thread in selected:
-            totals.add(thread.totals)
 
-    runtime = runtime_version(args.nettrace) if args.nettrace else None
-    unit = units.pop() if len(units) == 1 else "mixed-units"
-    print(f"Source\t{args.speedscope.resolve()}")
-    print(f"Unit\t{unit}")
-    print(f"Runtime\t{runtime or 'unknown'}")
+def signed(value: float) -> str:
+    return f"{value:+.2f}"
+
+
+def print_change(
+    title: str,
+    baseline: tuple[collections.Counter[str], float],
+    current: tuple[collections.Counter[str], float],
+    limit: int,
+) -> None:
+    """Rank functions by how much their share of their own capture's total moved, in percentage points."""
+    (before, before_total), (after, after_total) = baseline, current
+    print(title)
+    print("Baseline%\tCurrent%\tChange\tBaselineWeight\tCurrentWeight\tFunction")
+
+    def share(value: float, total: float) -> float:
+        return value * 100 / total if total else 0.0
+
+    rows = []
+    for name in set(before) | set(after):
+        old, new = before.get(name, 0.0), after.get(name, 0.0)
+        if old <= 0 and new <= 0:
+            continue
+        change = share(new, after_total) - share(old, before_total)
+        rows.append((name, old, new, change))
+    if not rows:
+        print("(no managed samples)")
+        return
+    rows.sort(key=lambda row: (-abs(row[3]), row[0]))
+    shown = display_names([row[0] for row in rows[:limit]])
+    for name, old, new, change in rows[:limit]:
+        print(
+            f"{share(old, before_total):.2f}\t{share(new, after_total):.2f}\t{signed(change)}\t"
+            f"{old:.2f}\t{new:.2f}\t{shown[name]}"
+        )
+
+
+def print_diff(baseline: Capture, current: Capture, limit: int) -> None:
+    # Two captures differ in length and thread count, so functions are compared by their share of their own
+    # capture's total. Both sides use one measure: if either has no managed-tagged sample, both use time on stack.
+    on_stack = baseline.untagged or current.untagged
+    before_exclusive, before_inclusive, before_total = baseline.rankings(on_stack)
+    after_exclusive, after_inclusive, after_total = current.rankings(on_stack)
+    total_name = "ManagedOnStackTime" if on_stack else "ManagedSampledTime"
+    measure = "on-stack time (running and blocked)" if on_stack else "managed CPU"
+
+    print(f"Baseline\t{baseline.path.resolve()}")
+    print(f"Current\t{current.path.resolve()}")
+    print(f"Unit\t{baseline.unit}" if baseline.unit == current.unit else f"Unit\t{baseline.unit} -> {current.unit}")
+    print(f"Runtime\t{baseline.runtime or 'unknown'} -> {current.runtime or 'unknown'}")
+    print(f"Threads\t{len(baseline.threads)} -> {len(current.threads)}")
+    for label, capture in (("Baseline", baseline), ("Current", current)):
+        if capture.selected is not capture.threads:
+            print(f"{label}Thread\t{capture.selected[0].name}")
+    print(f"WallClockDuration\t{baseline.wall_clock:.2f} -> {current.wall_clock:.2f}")
+    print(f"{total_name}\t{before_total:.2f} -> {after_total:.2f}")
+    if on_stack:
+        untagged = [label for label, capture in (("baseline", baseline), ("current", current)) if capture.untagged]
+        print(
+            f"Warning\tNo sample in the {' and '.join(untagged)} capture is tagged as running managed code, so both "
+            "captures are compared by time on stack, blocked time included (see trace-report). Compare one working "
+            "thread from each capture for numbers closer to CPU."
+        )
+    print(
+        f"Measure\tChange is the current share minus the baseline share of each capture's own {total_name}, "
+        "in percentage points; weights are in the captures' unit"
+    )
+    print()
+    print_change(
+        f"=== Top {limit} functions by change in exclusive {measure} ===",
+        (before_exclusive, before_total), (after_exclusive, after_total), limit,
+    )
+    print()
+    print_change(
+        f"=== Top {limit} functions by change in inclusive {measure} ===",
+        (before_inclusive, before_total), (after_inclusive, after_total), limit,
+    )
+
+
+def print_report(capture: Capture, limit: int) -> None:
+    on_stack = capture.untagged
+    totals = capture.totals
+    print(f"Source\t{capture.path.resolve()}")
+    print(f"Unit\t{capture.unit}")
+    print(f"Runtime\t{capture.runtime or 'unknown'}")
     # WallClockDuration is the capture window. Every other time here is summed across threads,
     # so on a multi-threaded target they exceed it — SampledThreadTime by roughly the thread
     # count. Reporting only the sum (as "ProfileDuration") read as elapsed time and was wrong.
-    print(f"Threads\t{len(threads)}")
-    if args.thread is not None:
-        print(f"SelectedThread\t{selected[0].name}")
-    print(f"WallClockDuration\t{max(ends) - min(starts):.2f}")
-    print(f"SampledThreadTime\t{sum(thread.duration for thread in selected):.2f}")
+    print(f"Threads\t{len(capture.threads)}")
+    if capture.selected is not capture.threads:
+        print(f"SelectedThread\t{capture.selected[0].name}")
+    print(f"WallClockDuration\t{capture.wall_clock:.2f}")
+    print(f"SampledThreadTime\t{sum(thread.duration for thread in capture.selected):.2f}")
     print(f"ManagedSampledTime\t{totals.managed:.2f}")
     print(f"UnmanagedOrBlockedTime\t{totals.unmanaged:.2f}")
     if on_stack:
@@ -259,18 +349,45 @@ def main() -> int:
             "Rankings are time on stack, blocked time included, as shares of ManagedOnStackTime; rank a "
             "working thread alone with its id from the thread table."
         )
-        exclusive, inclusive, total = totals.unmanaged_exclusive, totals.unmanaged_inclusive, totals.unmanaged_on_stack
         measure = "on-stack time (running and blocked)"
     else:
-        exclusive, inclusive, total = totals.exclusive, totals.inclusive, totals.managed
         measure = "managed CPU"
-    if args.thread is None:
+    exclusive, inclusive, total = capture.rankings(on_stack)
+    if capture.selected is capture.threads:
         print()
-        print_threads(threads, on_stack, args.limit)
+        print_threads(capture.threads, on_stack, limit)
     print()
-    print_ranking(f"=== Top {args.limit} functions by exclusive {measure} ===", exclusive, total, args.limit)
+    print_ranking(f"=== Top {limit} functions by exclusive {measure} ===", exclusive, total, limit)
     print()
-    print_ranking(f"=== Top {args.limit} functions by inclusive {measure} ===", inclusive, total, args.limit)
+    print_ranking(f"=== Top {limit} functions by inclusive {measure} ===", inclusive, total, limit)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("speedscope", type=Path)
+    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--nettrace", type=Path, help="the trace the file was converted from, to name the runtime")
+    parser.add_argument("--thread", help="rank only this thread, by the id in its 'Thread (<id>)' name")
+    parser.add_argument("--baseline", type=Path, help="compare against this earlier speedscope file")
+    parser.add_argument("--baseline-nettrace", type=Path, help="the trace the baseline was converted from")
+    parser.add_argument("--baseline-thread", help="the thread id to compare in the baseline")
+    args = parser.parse_args()
+    if args.limit < 1:
+        parser.error("--limit must be positive")
+    for option in ("thread", "baseline_thread"):
+        value = getattr(args, option)
+        if value is not None and not value.isdigit():
+            parser.error(f"--{option.replace('_', '-')} must be a numeric thread id, got {value!r}")
+    if args.baseline is None and (args.baseline_nettrace or args.baseline_thread):
+        parser.error("--baseline-nettrace and --baseline-thread need --baseline")
+    if args.baseline is not None and (args.thread is None) != (args.baseline_thread is None):
+        parser.error("a comparison selects a thread in both captures or in neither")
+
+    current = Capture(args.speedscope, args.thread, args.nettrace)
+    if args.baseline is None:
+        print_report(current, args.limit)
+    else:
+        print_diff(Capture(args.baseline, args.baseline_thread, args.baseline_nettrace), current, args.limit)
     return 0
 
 

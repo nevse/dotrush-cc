@@ -22,10 +22,10 @@ Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report ar
 1. If no PID was supplied, discover attachable processes:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" ps gcdump
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" ps gcdump [--filter <TEXT>]
    ```
 
-   Select only an unambiguous process. Otherwise ask the user.
+   Rows show `PID`, `ELAPSED`, `NAME`, `ASSEMBLY` (the first `.dll`/`.exe` argument) and `COMMAND` (its tail when long); `--filter` keeps rows containing the text, ignoring case, and exits 1 when none match. Select only an unambiguous process. Otherwise ask the user, showing those columns.
 
 2. For a one-time heap composition question, collect one snapshot:
 

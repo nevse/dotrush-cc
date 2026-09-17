@@ -1,6 +1,6 @@
 ---
 worth: yes
-where: plugins/dotrush/scripts/dotrush-profile.sh:257
+where: plugins/dotrush/scripts/dotrush-profile.sh:323
 added: 2026-09-17
 ---
 # `trace` cannot choose the profile, providers or buffer size

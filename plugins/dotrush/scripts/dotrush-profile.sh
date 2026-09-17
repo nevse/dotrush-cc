@@ -10,10 +10,11 @@ usage() {
   cat <<'EOF'
 Usage:
   dotrush-profile.sh tools
-  dotrush-profile.sh ps [trace|gcdump]
+  dotrush-profile.sh ps [trace|gcdump] [--filter <text>]
   dotrush-profile.sh trace <pid> [duration] [output-dir]
   dotrush-profile.sh trace --launch [duration] [output-dir] -- <command> [args...]
   dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
+  dotrush-profile.sh trace-diff <baseline-trace> <current-trace> [count] [baseline-thread-id current-thread-id]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
   dotrush-profile.sh heap-diff <baseline.gcdump|.gcdump.json> <current.gcdump|.gcdump.json> [count]
@@ -25,6 +26,16 @@ Defaults:
               else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
   count       30
   thread-id   all threads; the id from a report's thread table ranks that thread alone
+
+Comparing:
+  trace-diff ranks functions by how much their share of their own capture's managed CPU moved,
+  in percentage points, since two captures differ in length and thread count. If either capture
+  has no sample tagged managed, both are compared by time on stack. Thread ids differ between
+  processes, so a comparison of one thread names it in each capture.
+
+Processes:
+  ps lists attachable processes with elapsed time, main assembly and command line (its tail
+  when long); --filter keeps rows whose name, path or command line contains <text>, ignoring case.
 
 Launch:
   trace --launch starts <command> suspended and traces it from its first instruction until it
@@ -181,6 +192,33 @@ ensure_gcdump_json() {
   absolute_path "$graph"
 }
 
+# Prints the speedscope file for a .nettrace or .speedscope.json, converting a .nettrace that has none yet.
+ensure_speedscope() {
+  local trace_file="$1" speedscope_file
+  [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
+  if [[ "$trace_file" == *.speedscope.json ]]; then
+    printf '%s\n' "$trace_file"
+    return
+  fi
+  speedscope_file="$(speedscope_report_path "$trace_file")"
+  if [[ ! -f "$speedscope_file" ]]; then
+    use_bundle
+    run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
+    [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
+  fi
+  printf '%s\n' "$speedscope_file"
+}
+
+# The .nettrace beside a speedscope file, under the name `trace` gives its files; a speedscope file from
+# elsewhere simply has no runtime line.
+nettrace_for() {
+  if [[ "$1" == *.speedscope.json ]]; then
+    printf '%s\n' "${1%.speedscope.json}.nettrace"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # The .nettrace, when there is one, names the target's runtime, which the report needs to explain a
 # capture whose samples all read as unmanaged.
 write_trace_report() {
@@ -261,14 +299,25 @@ case "$command_name" in
     ;;
 
   ps)
-    profiler_type="${2:-trace}"
+    shift
+    profiler_type="trace"
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+      profiler_type="$1"
+      shift
+    fi
     case "$profiler_type" in
       trace) tool="dotnet-trace" ;;
       gcdump|heap) tool="dotnet-gcdump" ;;
       *) fail "unknown profiler type '$profiler_type'; expected trace or gcdump" ;;
     esac
+    filter_args=()
+    if [[ $# -gt 0 ]]; then
+      [[ "$1" == --filter && $# -eq 2 && -n "$2" ]] || fail "ps takes only --filter <text> after the profiler type, got: $*"
+      filter_args=(--filter "$2")
+    fi
     use_bundle
-    run_tool "$tool" ps
+    listing="$(run_tool "$tool" ps </dev/null)" || fail "$tool ps failed"
+    python3 "$SCRIPT_DIR/list-dotnet-processes.py" ${filter_args[@]+"${filter_args[@]}"} <<<"$listing"
     ;;
 
   trace)
@@ -332,19 +381,30 @@ case "$command_name" in
     [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
     require_count "$count"
     [[ -z "$thread" || "$thread" =~ ^[0-9]+$ ]] || fail "expected a numeric thread id, got '$thread'"
-    if [[ "$trace_file" == *.speedscope.json ]]; then
-      speedscope_file="$trace_file"
-      # The name `trace` gives its files; a speedscope file from elsewhere simply has no runtime line.
-      trace_file="${trace_file%.speedscope.json}.nettrace"
-    else
-      speedscope_file="$(speedscope_report_path "$trace_file")"
-      if [[ ! -f "$speedscope_file" ]]; then
-        use_bundle
-        run_tool dotnet-trace convert "$trace_file" --format speedscope --output "$trace_file" >&2
-        [[ -f "$speedscope_file" ]] || fail "dotnet-trace convert reported success but wrote no $speedscope_file"
-      fi
+    speedscope_file="$(ensure_speedscope "$trace_file")" || exit 1
+    write_trace_report "$speedscope_file" "$count" "$(nettrace_for "$trace_file")" "$thread"
+    ;;
+
+  trace-diff)
+    baseline="${2:-}"
+    current="${3:-}"
+    count="${4:-30}"
+    [[ -n "$baseline" && -n "$current" ]] || fail "trace-diff needs baseline and current traces"
+    (( $# <= 6 )) || fail "trace-diff takes at most a count and two thread ids after the traces"
+    require_count "$count"
+    args=(--limit "$count")
+    if (( $# > 4 )); then
+      (( $# == 6 )) || fail "trace-diff needs a thread id for each capture: <baseline-thread-id> <current-thread-id>"
+      [[ "$5" =~ ^[0-9]+$ && "$6" =~ ^[0-9]+$ ]] || fail "expected numeric thread ids, got '$5' and '$6'"
+      args+=(--baseline-thread "$5" --thread "$6")
     fi
-    write_trace_report "$speedscope_file" "$count" "$trace_file" "$thread"
+    baseline_speedscope="$(ensure_speedscope "$baseline")" || exit 1
+    current_speedscope="$(ensure_speedscope "$current")" || exit 1
+    baseline_nettrace="$(nettrace_for "$baseline")"
+    current_nettrace="$(nettrace_for "$current")"
+    [[ -f "$baseline_nettrace" ]] && args+=(--baseline-nettrace "$baseline_nettrace")
+    [[ -f "$current_nettrace" ]] && args+=(--nettrace "$current_nettrace")
+    python3 "$SCRIPT_DIR/summarize-speedscope.py" "$current_speedscope" --baseline "$baseline_speedscope" "${args[@]}"
     ;;
 
   heap)

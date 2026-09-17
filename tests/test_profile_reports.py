@@ -666,6 +666,9 @@ import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\n")
+if args[1] == "ps":
+    sys.stdout.write(os.environ.get("STUB_PS", ""))
+    sys.exit(0)
 output = args[args.index("--output") + 1]
 if args[1] == "collect":
     if not os.environ.get("STUB_NO_TRACE"):
@@ -676,6 +679,248 @@ if args[1] == "convert":
     with open(output[: -len(".nettrace")] + ".speedscope.json", "w", encoding="utf-8") as target:
         target.write(os.environ["STUB_SPEEDSCOPE"])
 """
+
+
+def sampled_capture(threads):
+    """A sampled speedscope document: {thread name: [(frame names, weight), ...]}; frames run root to leaf."""
+    frames = []
+    profiles = []
+    for name, samples in threads.items():
+        stacks = []
+        for stack, _ in samples:
+            for frame in stack:
+                if frame not in frames:
+                    frames.append(frame)
+            stacks.append([frames.index(frame) for frame in stack])
+        total = sum(weight for _, weight in samples)
+        profiles.append({"type": "sampled", "name": name, "unit": "milliseconds", "startValue": 0,
+                         "endValue": total, "samples": stacks, "weights": [weight for _, weight in samples]})
+    return {"shared": {"frames": [{"name": frame} for frame in frames]}, "profiles": profiles}
+
+
+ROOT_FRAME = "Process64 App (1)"
+
+
+def cpu(*frames):
+    return [ROOT_FRAME, *frames, "CPU_TIME"]
+
+
+def untagged(*frames):
+    return [ROOT_FRAME, *frames, "UNMANAGED_CODE_TIME"]
+
+
+def rows(output, heading):
+    """The data rows of a diff section: its heading's rest and the column header are dropped."""
+    return [line.split("\t") for line in block(output, heading).splitlines()[2:]]
+
+
+class TraceDiffTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def write(self, name, document):
+        path = self.root / name
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def diff(self, baseline, current, *args):
+        return subprocess.run(
+            [sys.executable, str(SUMMARIZE), str(self.write("current.speedscope.json", current)),
+             "--baseline", str(self.write("baseline.speedscope.json", baseline)), *args],
+            capture_output=True, text=True,
+        )
+
+    def test_ranks_functions_by_change_in_their_share_of_each_capture(self):
+        # The current capture is half as long, so Hot's weight falls by 60 but its share only by 40 points.
+        baseline = sampled_capture({"Thread (1)": [(cpu("App!Main()", "App!Hot()"), 80), (cpu("App!Main()", "App!Cold()"), 20)]})
+        current = sampled_capture({"Thread (9)": [(cpu("App!Main()", "App!Hot()"), 20), (cpu("App!Main()", "App!Cold()"), 20),
+                                                  (cpu("App!Main()", "App!New()"), 10)]})
+
+        result = self.diff(baseline, current, "--limit", "10")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ManagedSampledTime\t100.00 -> 50.00\n", result.stdout)
+        self.assertIn("Threads\t1 -> 1\n", result.stdout)
+        self.assertNotIn("Warning", result.stdout)
+        # Equal changes are ordered by name.
+        self.assertEqual(rows(result.stdout, "=== Top 10 functions by change in exclusive managed CPU"), [
+            ["80.00", "40.00", "-40.00", "80.00", "20.00", "App!Hot()"],
+            ["20.00", "40.00", "+20.00", "20.00", "20.00", "App!Cold()"],
+            ["0.00", "20.00", "+20.00", "0.00", "10.00", "App!New()"],
+        ])
+        inclusive = rows(result.stdout, "=== Top 10 functions by change in inclusive managed CPU")
+        self.assertEqual(inclusive[-1], ["100.00", "100.00", "+0.00", "100.00", "50.00", "App!Main()"])
+
+    def test_limit_keeps_the_largest_changes(self):
+        baseline = sampled_capture({"Thread (1)": [(cpu("App!A()"), 50), (cpu("App!B()"), 45), (cpu("App!C()"), 5)]})
+        current = sampled_capture({"Thread (1)": [(cpu("App!A()"), 10), (cpu("App!B()"), 45), (cpu("App!C()"), 45)]})
+
+        result = self.diff(baseline, current, "--limit", "2")
+
+        self.assertEqual([row[5] for row in rows(result.stdout, "=== Top 2 functions by change in exclusive")],
+                         ["App!A()", "App!C()"])
+
+    def test_an_untagged_capture_puts_both_on_time_on_stack(self):
+        # The baseline's blocked sample counts as on-stack time once the current capture has no managed tag.
+        baseline = sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 30), (untagged("App!Wait()"), 70)]})
+        current = sampled_capture({"Thread (2)": [(untagged("App!Hot()"), 20), (untagged("App!Wait()"), 80)]})
+
+        result = self.diff(baseline, current)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ManagedOnStackTime\t100.00 -> 100.00\n", result.stdout)
+        self.assertIn("Warning\tNo sample in the current capture is tagged", result.stdout)
+        self.assertEqual(rows(result.stdout, "=== Top 30 functions by change in exclusive on-stack time"), [
+            ["30.00", "20.00", "-10.00", "30.00", "20.00", "App!Hot()"],
+            ["70.00", "80.00", "+10.00", "70.00", "80.00", "App!Wait()"],
+        ])
+
+    def test_compares_one_thread_from_each_capture(self):
+        baseline = sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 10)], "Thread (2)": [(cpu("App!Idle()"), 90)]})
+        current = sampled_capture({"Thread (7)": [(cpu("App!Hot()"), 5), (cpu("App!Fast()"), 5)],
+                                   "Thread (8)": [(cpu("App!Idle()"), 90)]})
+
+        result = self.diff(baseline, current, "--baseline-thread", "1", "--thread", "7")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("BaselineThread\tThread (1)\nCurrentThread\tThread (7)\n", result.stdout)
+        self.assertEqual({row[5]: row[2] for row in rows(result.stdout, "=== Top 30 functions by change in exclusive")},
+                         {"App!Hot()": "-50.00", "App!Fast()": "+50.00"})
+
+        one_sided = self.diff(baseline, current, "--thread", "7")
+        self.assertEqual(one_sided.returncode, 2)
+        self.assertIn("in both captures or in neither", one_sided.stderr)
+
+    def trace_diff(self, *args, **env):
+        if not (self.root / "bundle").exists():
+            make_bundle(self.root / "bundle")
+        dotnet = self.root / "dotnet-stub"
+        dotnet.write_text(FAKE_DOTNET, encoding="utf-8")
+        dotnet.chmod(0o755)
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.root),
+            "DOTRUSH_DOTNET": str(dotnet),
+            "DOTRUSH_DIAGNOSTICS_DIR": str(self.root / "bundle"),
+            "STUB_LOG": str(self.root / "calls.log"),
+            **env,
+        }
+        return subprocess.run(["bash", str(PROFILE_SH), "trace-diff", *map(str, args)],
+                              capture_output=True, text=True, env=environment)
+
+    def test_the_helper_converts_a_nettrace_and_reads_a_speedscope_file(self):
+        baseline = self.write("base.speedscope.json", sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 10)]}))
+        (self.root / "base.nettrace").write_bytes(CORELIB.replace("10.0.10", "10.0.3").encode("utf-16-le"))
+        current = self.root / "current.nettrace"
+        current.write_bytes(NEWER_CORELIB.encode("utf-16-le"))
+        converted = sampled_capture({"Thread (4)": [(cpu("App!Hot()"), 5), (cpu("App!New()"), 5)]})
+
+        result = self.trace_diff(baseline, current, 5, STUB_SPEEDSCOPE=json.dumps(converted))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Current\t{self.root / 'current.speedscope.json'}\n", result.stdout)
+        self.assertIn("Runtime\t10.0.3 -> 10.0.11\n", result.stdout)
+        self.assertIn("=== Top 5 functions by change in exclusive managed CPU", result.stdout)
+        calls = [json.loads(line) for line in (self.root / "calls.log").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([call[1] for call in calls], ["convert"])
+
+    def test_the_helper_refuses_bad_arguments(self):
+        trace = self.write("t.speedscope.json", sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 10)]}))
+        cases = {
+            (trace,): "needs baseline and current",
+            (trace, trace, 0): "positive count",
+            (trace, trace, 5, 1): "a thread id for each capture",
+            (trace, trace, 5, 1, "x"): "numeric thread ids",
+            (trace, trace, 5, 1, 2, 3): "at most a count and two thread ids",
+            (trace, self.root / "missing.nettrace"): "trace not found",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                result = self.trace_diff(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+
+
+class ProcessListTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        dotnet = self.root / "dotnet-stub"
+        dotnet.write_text(FAKE_DOTNET, encoding="utf-8")
+        dotnet.chmod(0o755)
+        self.log = self.root / "calls.log"
+        # Two processes the tool would list identically, told apart only by their arguments.
+        self.hosts = [
+            subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"/w/{name}.dll", "--filter", name])
+            for name in ("testhost", "Other.Tests")
+        ]
+        for host in self.hosts:
+            self.addCleanup(host.wait)
+            self.addCleanup(host.kill)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        self.gone = gone.pid
+        listing = "".join(f" {host.pid}  dotnet  /usr/local/share/dotnet/dotnet   \n" for host in self.hosts)
+        self.env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.root),
+            "DOTRUSH_DOTNET": str(dotnet),
+            "DOTRUSH_DIAGNOSTICS_DIR": str(make_bundle(self.root / "bundle")),
+            "STUB_LOG": str(self.log),
+            # A pid that no longer exists keeps the tool's path as its command.
+            "STUB_PS": listing + f" {self.gone}  dotnet  /usr/local/share/dotnet/dotnet\n",
+        }
+
+    def ps(self, *args):
+        return subprocess.run(["bash", str(PROFILE_SH), "ps", *args], capture_output=True, text=True, env=self.env)
+
+    def test_rows_carry_elapsed_time_assembly_and_command_line(self):
+        result = self.ps("gcdump")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "PID\tELAPSED\tNAME\tASSEMBLY\tCOMMAND")
+        rows = [line.split("\t") for line in lines[1:]]
+        self.assertEqual([row[0] for row in rows], [str(host.pid) for host in self.hosts] + [str(self.gone)])
+        self.assertEqual([row[3] for row in rows], ["testhost.dll", "Other.Tests.dll", "dotnet"])
+        self.assertRegex(rows[0][1], r"^\d+:\d\d$")
+        self.assertTrue(rows[0][4].endswith("/w/testhost.dll --filter testhost"), rows[0][4])
+        self.assertEqual(rows[2][1:], ["-", "dotnet", "dotnet", "/usr/local/share/dotnet/dotnet"])
+        self.assertEqual(json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])[1:], ["ps"])
+
+    def test_filter_keeps_matching_rows_ignoring_case(self):
+        result = self.ps("--filter", "TESTHOST")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split("\t")[0] for line in result.stdout.splitlines()[1:]], [str(self.hosts[0].pid)])
+        self.assertIn("dotnet-trace.dll", self.log.read_text(encoding="utf-8"))
+
+    def test_a_filter_matching_nothing_fails_and_says_how_many_were_listed(self):
+        result = self.ps("trace", "--filter", "nothing-like-this")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("no .NET process matches 'nothing-like-this' (3 listed)", result.stderr)
+
+    def test_a_long_command_line_keeps_its_tail(self):
+        long_host = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "x" * 300, "/w/Tail.dll"])
+        self.addCleanup(long_host.wait)
+        self.addCleanup(long_host.kill)
+        self.env["STUB_PS"] = f"{long_host.pid} dotnet /usr/local/share/dotnet/dotnet\n"
+
+        result = self.ps()
+
+        command = result.stdout.splitlines()[1].split("\t")[4]
+        self.assertEqual(len(command), 200)
+        self.assertTrue(command.startswith("…") and command.endswith("x /w/Tail.dll"), command)
+
+    def test_unknown_arguments_are_refused(self):
+        for args in (["trace", "--filter"], ["trace", "--grep", "x"], ["trace", "--filter", "x", "y"], ["other"]):
+            with self.subTest(args=args):
+                result = self.ps(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("dotrush-profile:", result.stderr)
 
 
 class TraceLaunchTests(unittest.TestCase):

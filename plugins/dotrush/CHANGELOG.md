@@ -1,5 +1,18 @@
 # Changelog
 
+### 0.7.3
+- `dotrush-profile.sh trace-diff <baseline> <current> [count] [baseline-thread current-thread]` compares two CPU
+  captures: functions ranked by how much their share of each capture's own managed CPU moved, in percentage
+  points, with both raw weights and both totals. If either capture has no sample tagged managed, both are compared
+  by time on stack. The CPU skill uses it for before/after questions.
+- `dotrush-profile.sh ps` adds each process's elapsed time, main assembly and command line (its tail when long),
+  and takes `--filter <text>`: processes started through the `dotnet` host were identical rows before.
+- `dotrush-pick-project` applies a project or user instruction that already names the solution instead of always
+  asking, and chooses `restoreProjectsBeforeLoading` (`false` for a built checkout or an unreachable NuGet feed).
+- The proxy's injector no longer dies on a JSON line nested too deeply for Python 3.9's parser, which silently
+  dropped every later injection until a restart; a failed FIFO open no longer leaks its write descriptor.
+- A test checks that every CLI error message a skill quotes is still in the CLI sources.
+
 ### 0.7.2
 - `dotrush-profile.sh trace --launch [duration] [output-dir] -- <command...>` starts the command under
   `dotnet-trace` and traces it from startup until it exits or the duration ends, so a microbenchmark or a single
