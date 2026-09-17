@@ -103,14 +103,16 @@ even several launched from the **same** folder, e.g. one per git worktree — ge
 injection FIFO, and they never collide or mesh. Dirs from ended sessions are pruned automatically on the
 next server start.
 
-The session id comes from `AGTERM_SESSION_ID` (unique per Claude session). On terminals that don't set one
+The session id comes from `AGTERM_SESSION_ID`. Every Claude Code process started from one agterm tab,
+background jobs included, inherits the same id, so the key also includes the launching Claude Code process
+(the server's parent, which the tools see as `CLAUDE_PID`). On terminals that don't set one
 (headless/CI), the plugin falls back to per-**workspace** scoping keyed on the project-dir hash — the older
 behavior, where the project choice also persists across restarts. Per-session scoping trades that
 cross-restart persistence for isolation: a fresh session re-picks its project (parallel worktree sessions
 otherwise share `CLAUDE_PROJECT_DIR` and clobber one shared choice).
 
 The plugin's tools find the current session's dir with `dotrush-cli.sh session --dir`: the `sess-*` dir recording
-this session id, else a dir whose `workspace.txt` is `CLAUDE_PROJECT_DIR` (or the working directory) among the
+this session id (and, for an agterm id, this Claude Code process), else a dir whose `workspace.txt` is `CLAUDE_PROJECT_DIR` (or the working directory) among the
 per-workspace dirs only. Another session's `sess-*` dir is never picked, even for the same workspace.
 
 ## Capabilities (via the Claude Code `LSP` tool)

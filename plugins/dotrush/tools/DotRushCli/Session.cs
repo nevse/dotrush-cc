@@ -139,7 +139,9 @@ public static class Session
         return new SessionState(dir);
     }
 
-    // 1. with a session id, a sess-* dir whose session.txt records it;
+    // 1. with a session id, a sess-* dir whose session.txt records it; for an AGTERM_SESSION_ID, which every
+    //    Claude process in one agterm tab shares, also one whose claude-pid is CLAUDE_PID (or that has no
+    //    claude-pid, written by a proxy from before it was recorded);
     // 2. otherwise, or when none does, a dir without the sess- prefix whose workspace.txt is the project
     //    dir (CLAUDE_PROJECT_DIR, else the cwd), so another session's dir is never picked;
     // 3. among several, a live pid first, then the newest pid file.
@@ -156,10 +158,14 @@ public static class Session
         }
         Array.Sort(dirs, StringComparer.Ordinal);
 
-        var sessionId = Get(env, "DOTRUSH_SESSION_ID") ?? Get(env, "AGTERM_SESSION_ID");
+        var explicitId = Get(env, "DOTRUSH_SESSION_ID");
+        var sessionId = explicitId ?? Get(env, "AGTERM_SESSION_ID");
+        var claudePid = explicitId is null ? Get(env, "CLAUDE_PID") : null;
         var matches = sessionId is null
             ? []
-            : dirs.Where(dir => IsSessionDir(dir) && HasLine(Path.Combine(dir, "session.txt"), line => line == sessionId))
+            : dirs.Where(dir => IsSessionDir(dir)
+                    && HasLine(Path.Combine(dir, "session.txt"), line => line == sessionId)
+                    && (claudePid is null || IsClaudePid(dir, claudePid)))
                 .ToArray();
         if (matches.Length == 0)
         {
@@ -179,6 +185,12 @@ public static class Session
     }
 
     static bool IsSessionDir(string dir) => Path.GetFileName(dir).StartsWith("sess-", StringComparison.Ordinal);
+
+    static bool IsClaudePid(string dir, string claudePid)
+    {
+        var path = Path.Combine(dir, "claude-pid");
+        return !File.Exists(path) || HasLine(path, line => line == claudePid);
+    }
 
     static DateTime PidWritten(string dir)
     {
