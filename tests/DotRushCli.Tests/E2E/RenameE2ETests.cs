@@ -68,7 +68,7 @@ public sealed partial class RenameE2ETests : IAsyncLifetime
         foreach (var (path, needle) in new[] { (server.GreeterPath, "class " + newName), (server.AppPath, "new " + newName) })
         {
             // The position of the new name in the file as it is on disk now.
-            var (line, character) = PositionOf(File.ReadAllText(path), needle, needle.IndexOf(' ') + 1);
+            var (line, character) = DotRushServerFixture.PositionOf(File.ReadAllText(path), needle, needle.IndexOf(' ') + 1);
             var hover = await server.HoverAsync(path, line, character,
                 stdout => stdout.Contains(newName, StringComparison.Ordinal) && !stdout.Contains("Greeter", StringComparison.Ordinal));
 
@@ -94,13 +94,13 @@ public sealed partial class RenameE2ETests : IAsyncLifetime
         Assert.Equal("", apply.Stdout);
         Assert.Equal(greeterBefore, File.ReadAllText(server.GreeterPath));
         Assert.Equal(appEdited, File.ReadAllText(server.AppPath));
-        Assert.Empty(Directory.GetFiles(server.Workspace, "*.dotrush-cc.tmp", SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetFiles(server.Workspace, "*" + WorkspaceEditApplier.TempSuffix, SearchOption.AllDirectories));
     }
 
     // rename preview on the Greeter class name in Greeter.cs, retried while DotRush's semantic model settles.
-    async Task<(int Exit, string Stdout, string Stderr)> PreviewAsync(string newName)
+    async Task<CliResult> PreviewAsync(string newName)
     {
-        var (line, character) = PositionOf(File.ReadAllText(server.GreeterPath), "class Greeter", "class ".Length);
+        var (line, character) = DotRushServerFixture.PositionOf(File.ReadAllText(server.GreeterPath), "class Greeter", "class ".Length);
         var preview = await server.RunCliUntilAsync(result => result.Exit == 0, TimeSpan.FromSeconds(60),
             "rename", "preview", server.GreeterPath, (line + 1).ToString(), (character + 1).ToString(), newName);
         if (preview.Exit != 0)
@@ -127,7 +127,7 @@ public sealed partial class RenameE2ETests : IAsyncLifetime
         while (true)
         {
             var injected = File.Exists(log)
-                ? File.ReadAllLines(log).Count(line => line.Contains("INJECT -> notif    textDocument/didOpen", StringComparison.Ordinal))
+                ? File.ReadAllLines(log).Count(line => InjectedDidOpen().IsMatch(line))
                 : 0;
             if (injected == count || DateTime.UtcNow >= deadline)
             {
@@ -135,16 +135,6 @@ public sealed partial class RenameE2ETests : IAsyncLifetime
             }
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
-    }
-
-    // The 0-based LSP position of needle[offset] in text (the demo files are ASCII, so chars are UTF-16 units).
-    static (int Line, int Character) PositionOf(string text, string needle, int offset)
-    {
-        var index = text.IndexOf(needle, StringComparison.Ordinal);
-        Assert.True(index >= 0, $"'{needle}' not found in:\n{text}");
-        index += offset;
-        var lineStart = text.LastIndexOf('\n', index - 1) + 1;
-        return (text[..lineStart].Count(c => c == '\n'), index - lineStart);
     }
 
     string PlanId(string previewStdout)
@@ -156,9 +146,13 @@ public sealed partial class RenameE2ETests : IAsyncLifetime
 
     static string[] Lines(string text) => text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
-    string Describe(string step, (int Exit, string Stdout, string Stderr) result) =>
+    string Describe(string step, CliResult result) =>
         $"{step}: exit {result.Exit}\nstdout: {result.Stdout}\nstderr: {result.Stderr}{server.Diagnostics()}";
 
     [GeneratedRegex(@"^plan: ([0-9a-f]{12})$", RegexOptions.Multiline)]
     private static partial Regex PlanLine();
+
+    // The proxy's log line for a notification injected through its FIFO, whatever padding it uses.
+    [GeneratedRegex(@"INJECT -> notif\s+textDocument/didOpen\b")]
+    private static partial Regex InjectedDidOpen();
 }

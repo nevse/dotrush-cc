@@ -22,7 +22,8 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    - `target: none chosen` — DotRush may have loaded nothing. Run the `dotrush-pick-project` skill first unless the workspace holds a single solution or a `dotrush.config.json`.
    - `publishes: no capture (older proxy)` — the language server started before the plugin was updated. Tell the user to restart Claude Code; do not try to work around it.
    - `channel: unavailable (older proxy)` — the proxy predates the request channel that plugin tools such as rename use. Diagnostics do not need it, so `solution` and `report` still work; mention a Claude Code restart only if the user also wants those tools.
-   - The first `where` (or any first use of the plugin's CLI) builds that CLI once per plugin version, which takes a few seconds and prints `building the DotRush CLI` on stderr.
+   - The first `where` (or any first use of the plugin's CLI) builds that CLI once per plugin version, which takes a few seconds and prints `building the DotRush CLI` on stderr. `where`, `solution` and `report` all find the session through that CLI, so `building the DotRush CLI failed; full log: …` (or a missing `shasum`/`sha256sum`) stops all three, even `report`, which otherwise needs nothing running. That is a .NET 10 SDK problem, not a language-server one: report the tail of the log it prints.
+   - `no DotRush language server has started` while the server is plainly running usually means the session id is missing from this Bash environment: the lookup matches `DOTRUSH_SESSION_ID` or `AGTERM_SESSION_ID`, and falls back to a per-workspace directory only. Tell the user to restart Claude Code from a terminal that sets one, rather than retrying.
 
 2. Run the analysis:
 

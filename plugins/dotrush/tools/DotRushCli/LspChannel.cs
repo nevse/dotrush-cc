@@ -10,12 +10,11 @@ public enum LspReplyKind
 {
     // The server answered with a result (possibly null).
     Result,
-    // The server answered with a JSON-RPC error; Message is "code: message".
+    // The exchange failed: a JSON-RPC error ("code: message"), or a request that could not be sent or whose response
+    // could not be read. Message says which; every caller reports them the same way.
     Error,
     // No answer in time; the request was cancelled.
     Timeout,
-    // The request could not be sent or its response could not be read; Message says why.
-    Failed,
 }
 
 public sealed record LspReply(LspReplyKind Kind, JsonElement Result, string Message);
@@ -43,33 +42,9 @@ public sealed class LspChannel(SessionState session)
     // A lowercase GUID after the prefix: the only suffix the proxy turns into a file name.
     public static string NewId() => IdPrefix + Guid.NewGuid().ToString("D");
 
-    // Responses nobody collected (a CLI killed while waiting) would otherwise pile up.
-    public void DeleteStaleResponses()
-    {
-        var cutoff = DateTime.UtcNow - StaleResponseAge;
-        string[] files;
-        try
-        {
-            files = Directory.GetFiles(ResponsesDir, "*.json");
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            return;
-        }
-        foreach (var file in files)
-        {
-            try
-            {
-                if (File.GetLastWriteTimeUtc(file) < cutoff)
-                {
-                    File.Delete(file);
-                }
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-            }
-        }
-    }
+    // Responses nobody collected (a CLI killed while waiting) would otherwise pile up, as would the <uuid>.json.<pid>.tmp
+    // files a proxy killed mid-write leaves behind.
+    public void DeleteStaleResponses() => StaleFiles.Delete(ResponsesDir, StaleResponseAge, ".json", ".tmp");
 
     // Sends a request and waits for its response. On timeout it sends $/cancelRequest and deletes a response that
     // still arrives within a second.
@@ -78,7 +53,7 @@ public sealed class LspChannel(SessionState session)
         var id = NewId();
         if (Write(Line(id, method, parameters)) is { } failure)
         {
-            return new(LspReplyKind.Failed, Null, failure);
+            return new(LspReplyKind.Error, Null, failure);
         }
         var body = WaitForResponse(id, timeout);
         if (body is null)
@@ -91,8 +66,11 @@ public sealed class LspChannel(SessionState session)
         return Read(body);
     }
 
-    // Sends a notification; null on success, else why it could not be written.
-    public string? Notify(string method, JsonNode? parameters) => Write(Line(null, method, parameters));
+    // Sends notifications through a single FIFO open; null on success, else why they could not be written. The
+    // proxy's injector keeps the FIFO open for its whole life, so the batch is not what keeps lines from being lost;
+    // it keeps a rename of N files to one open, one retry and one timeout.
+    public string? NotifyAll(IReadOnlyList<(string Method, JsonNode? Parameters)> notifications) =>
+        Write([.. notifications.Select(notification => Line(null, notification.Method, notification.Parameters))]);
 
     // One JSON-RPC message on one line, newline included, so it goes into the FIFO with a single write.
     static byte[] Line(string? id, string method, JsonNode? parameters)
@@ -118,14 +96,14 @@ public sealed class LspChannel(SessionState session)
         return buffer.ToArray();
     }
 
-    string? Write(byte[] line)
+    // Writes whole lines into the FIFO through one open, each with a single write so a line up to PIPE_BUF cannot
+    // interleave with another writer's.
+    string? Write(params byte[][] lines)
     {
         var path = FifoPath;
-        var write = Task.Factory.StartNew(() =>
-        {
-            using var fifo = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, bufferSize: 0);
-            fifo.Write(line);
-        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        var write = Task.Factory.StartNew(
+            () => WriteLines(() => new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, bufferSize: 0), lines),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         try
         {
             if (write.Wait(OpenTimeout))
@@ -141,6 +119,49 @@ public sealed class LspChannel(SessionState session)
         // late failure is not reported as an unobserved task exception.
         write.ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
         return $"cannot write to the proxy's FIFO {path}: the proxy did not open it for reading within {Seconds(OpenTimeout)} s; restart Claude Code if this persists";
+    }
+
+    // Writes every line, each with one Write, to a stream from open. A write that fails (EPIPE: the reader is gone)
+    // is retried once with the WHOLE batch through a new open: the lines written before the failure went into a pipe
+    // whose reader was closing, so nothing says they were read. The failed stream stays open until the new open
+    // returns, because the kernel frees a pipe's unread data once it has neither reader nor writer. Resending is
+    // safe for the batches sent here: a didOpen only makes DotRush re-read the file, and a request is one line, so a
+    // failure means none of it was written. Throws when the retry fails too.
+    public static void WriteLines(Func<Stream> open, IReadOnlyList<byte[]> lines)
+    {
+        Stream? failed = null;
+        try
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                var stream = open();
+                failed?.Dispose();
+                failed = null;
+                try
+                {
+                    foreach (var line in lines)
+                    {
+                        stream.Write(line);
+                    }
+                }
+                catch (IOException) when (attempt == 0)
+                {
+                    failed = stream;
+                    continue;
+                }
+                catch
+                {
+                    stream.Dispose();
+                    throw;
+                }
+                stream.Dispose();
+                return;
+            }
+        }
+        finally
+        {
+            failed?.Dispose();
+        }
     }
 
     // The response body for id, deleted once read, or null when it did not arrive in time.
@@ -182,7 +203,7 @@ public sealed class LspChannel(SessionState session)
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                return new(LspReplyKind.Failed, Null, "the response is not a JSON-RPC message");
+                return new(LspReplyKind.Error, Null, "the response is not a JSON-RPC message");
             }
             if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null)
             {
@@ -193,7 +214,7 @@ public sealed class LspChannel(SessionState session)
         }
         catch (JsonException e)
         {
-            return new(LspReplyKind.Failed, Null, $"the response is not valid JSON: {e.Message}");
+            return new(LspReplyKind.Error, Null, $"the response is not valid JSON: {e.Message}");
         }
     }
 
@@ -210,7 +231,7 @@ public sealed class LspChannel(SessionState session)
         return $"{code}: {message}";
     }
 
-    internal static string Seconds(TimeSpan span) => span.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+    static string Seconds(TimeSpan span) => span.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture);
 }
 
 public static class RequestCommand
@@ -224,12 +245,7 @@ public static class RequestCommand
         var parsed = Parse(args);
         if (parsed is not { Method: { } method, Parameters: { } parameters, Timeout: { } timeout })
         {
-            if (parsed.Problem is not null)
-            {
-                context.Stderr.WriteLine($"dotrush-cli: {parsed.Problem}");
-            }
-            context.Stderr.WriteLine($"dotrush-cli: usage: dotrush-cli.sh {Synopsis}");
-            return ExitCode.Usage;
+            return CliErrors.Usage(context, parsed.Problem, Synopsis);
         }
         var ready = Session.RequireChannel(context, out var session);
         if (ready != ExitCode.Success)
@@ -239,26 +255,21 @@ public static class RequestCommand
         var channel = new LspChannel(session!);
         channel.DeleteStaleResponses();
         var reply = channel.Request(method, parameters, timeout);
-        switch (reply.Kind)
+        if (reply.Kind != LspReplyKind.Result)
         {
-            case LspReplyKind.Result:
-                context.Stdout.WriteLine(reply.Result.GetRawText());
-                return ExitCode.Success;
-            case LspReplyKind.Timeout:
-                context.Stderr.WriteLine($"dotrush-cli: {reply.Message}");
-                return ExitCode.Timeout;
-            default:
-                context.Stderr.WriteLine($"dotrush-cli: {reply.Message}");
-                return ExitCode.Error;
+            return CliErrors.ReportFailure(context, reply);
         }
+        context.Stdout.WriteLine(reply.Result.GetRawText());
+        return ExitCode.Success;
     }
 
     sealed record Arguments(string? Method, JsonNode? Parameters, TimeSpan? Timeout, string? Problem);
 
     // Moves every argument except `--timeout N` into positional and sets timeout from N; returns the problem with
-    // a malformed --timeout, or null.
+    // a malformed or repeated --timeout, or null.
     internal static string? TakeTimeout(string[] args, List<string> positional, ref TimeSpan timeout)
     {
+        var seen = false;
         for (var i = 0; i < args.Length; i++)
         {
             if (args[i] != "--timeout")
@@ -266,6 +277,11 @@ public static class RequestCommand
                 positional.Add(args[i]);
                 continue;
             }
+            if (seen)
+            {
+                return "--timeout may be given only once";
+            }
+            seen = true;
             if (i + 1 >= args.Length
                 || !double.TryParse(args[i + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
                 || !(seconds > 0 && seconds <= MaxTimeoutSeconds))

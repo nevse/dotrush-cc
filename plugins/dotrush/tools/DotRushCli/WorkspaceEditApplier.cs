@@ -31,15 +31,20 @@ public sealed record EditPlan(
         Uris is not null && Uris.TryGetValue(path, out var uri) ? uri : new Uri(path).AbsoluteUri;
 }
 
-// One file of a preview: its edits in the order given, with the disk text each edit's range covers.
+// One file of a preview: how many edits it takes, where it sits relative to the workspace, and the text the preview
+// read from it, so a caller can check the edits against the disk without loading the file a second time.
 public sealed record FilePreview(
-    string Path, string RelativePath, int EditCount, bool OutsideWorkspace, IReadOnlyList<string> RangeTexts);
+    string Path, string RelativePath, int EditCount, bool OutsideWorkspace, bool OutsideRoot, SourceDocument Document);
 
 public sealed record EditPreview(EditPlan Plan, string Diff, IReadOnlyList<FilePreview> Files);
 
 public sealed class WorkspaceEditException(
     string message, IReadOnlyList<string>? changed = null, IReadOnlyList<string>? unchanged = null) : Exception(message)
 {
+    // An edit that lands past the end of its line or of the file: DotRush has not seen the file's latest version.
+    public static string StaleView(string path) =>
+        $"DotRush's view of {path} differs from disk; preview again after the file is saved";
+
     // Files already rewritten when the apply stopped, and files still as they were.
     public IReadOnlyList<string> Changed { get; } = changed ?? [];
     public IReadOnlyList<string> Unchanged { get; } = unchanged ?? [];
@@ -110,12 +115,6 @@ public sealed class SourceDocument
         {
             throw new WorkspaceEditException($"the new text for {Path} is not valid Unicode");
         }
-    }
-
-    public string TextAt(LspRange range)
-    {
-        var (start, end) = Span(range);
-        return Text[start..end];
     }
 
     // The text with every edit applied. Positions refer to the original text, so edits go in last to first.
@@ -267,7 +266,7 @@ public sealed class SourceDocument
     // A position past the end of its line or of the text means the server saw a different version of the file.
     int Offset(LspPosition position) => TryGetOffset(position, out var offset)
         ? offset
-        : throw new WorkspaceEditException($"DotRush's view of {Path} differs from disk; preview again after the file is saved");
+        : throw new WorkspaceEditException(WorkspaceEditException.StaleView(Path));
 
     // The UTF-16 offset of a 0-based position; false when the position is past the end of its line or of the text.
     public bool TryGetOffset(LspPosition position, out int offset)
@@ -343,13 +342,15 @@ public sealed class SourceDocument
     }
 }
 
-// Builds rename plans from a WorkspaceEdit and applies them all-or-nothing: every file's hash re-checked, every temp
-// file written before any file is replaced. The write and move operations can be swapped out to test failures.
+// Builds rename plans from a WorkspaceEdit and applies them, checking every file before replacing any: every file's
+// hash re-checked, every temp file written before any file is replaced. The write and move operations can be swapped out to test failures.
 [UnsupportedOSPlatform("windows")]
 public sealed partial class WorkspaceEditApplier(
-    Action<string, byte[]>? writeFile = null, Action<string, string>? moveFile = null)
+    Action<string, byte[], UnixFileMode>? writeFile = null, Action<string, string>? moveFile = null)
 {
     public const string TempSuffix = ".dotrush-cc.tmp";
+
+    static readonly TimeSpan StalePlanAge = TimeSpan.FromHours(1);
 
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -359,7 +360,7 @@ public sealed partial class WorkspaceEditApplier(
         RespectRequiredConstructorParameters = true,
     };
 
-    readonly Action<string, byte[]> writeFile = writeFile ?? File.WriteAllBytes;
+    readonly Action<string, byte[], UnixFileMode> writeFile = writeFile ?? WriteNewFile;
     readonly Action<string, string> moveFile = moveFile ?? ((from, to) => File.Move(from, to, overwrite: true));
 
     // \z, not $: $ also matches before a trailing newline.
@@ -402,7 +403,7 @@ public sealed partial class WorkspaceEditApplier(
             planChanges[path] = edits;
             hashes[path] = Sha256(document.Bytes);
             uris[path] = uriByPath[path];
-            files.Add(new(path, relative, edits.Count, IsOutsideWorkspace(path, root), [.. edits.Select(edit => document.TextAt(edit.Range))]));
+            files.Add(new(path, relative, edits.Count, IsOutsideWorkspace(path, root), IsOutsideRoot(relative), document));
         }
         return new(new(root, oldName, newName, planChanges, hashes, uris), diff.ToString(), files);
     }
@@ -422,7 +423,7 @@ public sealed partial class WorkspaceEditApplier(
     public static bool IsOutsideWorkspace(string path, string root)
     {
         var relative = Path.GetRelativePath(root, path);
-        if (relative == "." || relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        if (relative == "." || IsOutsideRoot(relative))
         {
             return true;
         }
@@ -430,22 +431,39 @@ public sealed partial class WorkspaceEditApplier(
             segment.Equals("bin", StringComparison.OrdinalIgnoreCase) || segment.Equals("obj", StringComparison.OrdinalIgnoreCase));
     }
 
+    // A relative path that leaves the root it was computed from.
+    public static bool IsOutsideRoot(string relative) =>
+        relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative);
+
     public static string Sha256(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
     // Saves the plan and its full diff under <session>/edits/ and returns the new plan id.
     public static string SavePlan(string sessionDir, EditPreview preview)
     {
-        var edits = Directory.CreateDirectory(Path.Combine(sessionDir, "edits")).FullName;
-        string id;
-        do
+        var edits = Path.Combine(sessionDir, "edits");
+        try
         {
-            id = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(6));
+            Directory.CreateDirectory(edits);
+            string id;
+            do
+            {
+                id = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(6));
+            }
+            while (File.Exists(Path.Combine(edits, id + ".json")));
+            File.WriteAllText(Path.Combine(edits, id + ".diff"), preview.Diff);
+            File.WriteAllBytes(Path.Combine(edits, id + ".json"), JsonSerializer.SerializeToUtf8Bytes(preview.Plan, JsonOptions));
+            return id;
         }
-        while (File.Exists(Path.Combine(edits, id + ".json")));
-        File.WriteAllText(Path.Combine(edits, id + ".diff"), preview.Diff);
-        File.WriteAllBytes(Path.Combine(edits, id + ".json"), JsonSerializer.SerializeToUtf8Bytes(preview.Plan, JsonOptions));
-        return id;
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            throw new WorkspaceEditException($"cannot save the rename plan in {edits}: {e.Message}");
+        }
     }
+
+    // Plans a preview saved and nobody applied (a rename the user did not confirm) would otherwise stay until the
+    // language server restarts, which is what clears edits/.
+    public static void DeleteStalePlans(string sessionDir) =>
+        StaleFiles.Delete(Path.Combine(sessionDir, "edits"), StalePlanAge, ".json", ".diff");
 
     public static string DiffPath(string sessionDir, string planId) => PlanPath(sessionDir, planId, ".diff");
 
@@ -464,7 +482,11 @@ public sealed partial class WorkspaceEditApplier(
         try
         {
             var plan = JsonSerializer.Deserialize<EditPlan>(bytes, JsonOptions);
-            if (plan is not null && plan.Changes.Keys.All(plan.Files.ContainsKey))
+            // A JSON null inside the maps survives the record's own nullability checks, which only cover its members.
+            if (plan is not null && plan.Changes.Keys.All(plan.Files.ContainsKey)
+                && plan.Changes.Values.All(edits => edits is not null && edits.All(edit => edit is not null))
+                && plan.Files.Values.All(hash => hash is not null)
+                && (plan.Uris is null || plan.Uris.Values.All(uri => uri is not null)))
             {
                 return plan;
             }
@@ -476,9 +498,13 @@ public sealed partial class WorkspaceEditApplier(
     }
 
     // Applies a saved plan and deletes it. Returns the changed files in path order.
-    public IReadOnlyList<string> Apply(string sessionDir, string planId, bool allowOutsideWorkspace)
+    public IReadOnlyList<string> Apply(string sessionDir, string planId, bool allowOutsideWorkspace) =>
+        Apply(sessionDir, planId, LoadPlan(sessionDir, planId), allowOutsideWorkspace);
+
+    // The same for a plan already read, so a caller that needs the plan itself does not load and validate it twice
+    // (and cannot see two different versions of it).
+    public IReadOnlyList<string> Apply(string sessionDir, string planId, EditPlan plan, bool allowOutsideWorkspace)
     {
-        var plan = LoadPlan(sessionDir, planId);
         var root = Posix.RealPath(plan.Workspace) ?? plan.Workspace;
         var paths = plan.Changes.Keys.Order(StringComparer.Ordinal).ToList();
 
@@ -522,7 +548,7 @@ public sealed partial class WorkspaceEditApplier(
             var update = updates[i];
             try
             {
-                writeFile(update.Temp, update.Bytes);
+                writeFile(update.Temp, update.Bytes, update.Mode);
                 File.SetUnixFileMode(update.Temp, update.Mode);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -549,15 +575,22 @@ public sealed partial class WorkspaceEditApplier(
                 }
                 var changed = paths.Take(i).ToList();
                 var unchanged = paths.Skip(i).ToList();
+                // The files already replaced no longer match the plan's hashes, so it could never be applied again.
+                DeletePlan(sessionDir, planId);
                 throw new WorkspaceEditException(
                     $"cannot replace {updates[i].Path}: {e.Message}; changed: {List(changed)}; unchanged: {List(unchanged)}",
                     changed, unchanged);
             }
         }
 
+        DeletePlan(sessionDir, planId);
+        return paths;
+    }
+
+    static void DeletePlan(string sessionDir, string planId)
+    {
         TryDelete(PlanPath(sessionDir, planId, ".json"));
         TryDelete(PlanPath(sessionDir, planId, ".diff"));
-        return paths;
     }
 
     static string PlanPath(string sessionDir, string planId, string extension) =>
@@ -571,6 +604,21 @@ public sealed partial class WorkspaceEditApplier(
     static WorkspaceEditException Stale(string path) => new($"{path} changed since preview; run rename preview again");
 
     static string List(IReadOnlyList<string> paths) => paths.Count == 0 ? "none" : string.Join(", ", paths);
+
+    // The temp file sits at a predictable path next to its target, so it is created, never opened: an entry already
+    // there (a stale temp, or a symlink planted at that name) is removed first rather than written through. The mode
+    // is set as the file is created, so a private source file is never world-readable at its temp path.
+    static void WriteNewFile(string path, byte[] bytes, UnixFileMode mode)
+    {
+        TryDelete(path);
+        using var stream = new FileStream(path, new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            UnixCreateMode = mode,
+        });
+        stream.Write(bytes);
+    }
 
     static void TryDelete(string path)
     {

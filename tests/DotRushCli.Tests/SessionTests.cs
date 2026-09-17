@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 
 namespace DotRushCli.Tests;
@@ -9,7 +8,9 @@ namespace DotRushCli.Tests;
 public sealed class SessionTests : IDisposable
 {
     static readonly int LivePid = Environment.ProcessId;
-    static readonly Lazy<int> DeadPid = new(ExitedProcessId);
+    // Past the largest pid macOS and Linux hand out, so nothing can be running under it: the pid of an exited
+    // process would be reused eventually and silently turn these tests' "dead proxy" into a live one.
+    const int DeadPid = 2147483000;
 
     readonly DirectoryInfo root = Directory.CreateTempSubdirectory("dotrush-cli-session-");
     readonly string data;
@@ -59,13 +60,7 @@ public sealed class SessionTests : IDisposable
         return env;
     }
 
-    (int Exit, string Stdout, string Stderr) Run(Dictionary<string, string?> env, string? cwd, params string[] args)
-    {
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-        var exit = Program.Run(args, env, cwd ?? project, stdout, stderr);
-        return (exit, stdout.ToString(), stderr.ToString());
-    }
+    CliResult Run(Dictionary<string, string?> env, string? cwd, params string[] args) => Cli.Run(env, cwd ?? project, args);
 
     string NoSessionMessage =>
         $"dotrush-cli: no DotRush language server has started in this session (looked in {ws}); run any C# LSP operation first\n";
@@ -146,7 +141,7 @@ public sealed class SessionTests : IDisposable
     {
         var live = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "same", Pid: LivePid));
         File.SetLastWriteTimeUtc(Path.Combine(live, "pid"), DateTime.UtcNow.AddHours(-1));
-        MakeDir("sess-bbbbbbbbbbbb", new(Workspace: project, SessionId: "same", Pid: DeadPid.Value));
+        MakeDir("sess-bbbbbbbbbbbb", new(Workspace: project, SessionId: "same", Pid: DeadPid));
 
         Assert.Equal((0, live + "\n", ""), Run(Env(sessionId: "same"), null, "session", "--dir"));
     }
@@ -154,9 +149,9 @@ public sealed class SessionTests : IDisposable
     [Fact]
     public void With_several_dead_matches_the_newest_pid_file_wins()
     {
-        var older = MakeDir("0123456789ab", new(Workspace: project, Pid: DeadPid.Value));
+        var older = MakeDir("0123456789ab", new(Workspace: project, Pid: DeadPid));
         File.SetLastWriteTimeUtc(Path.Combine(older, "pid"), DateTime.UtcNow.AddHours(-1));
-        var newer = MakeDir("ba9876543210", new(Workspace: project, Pid: DeadPid.Value));
+        var newer = MakeDir("ba9876543210", new(Workspace: project, Pid: DeadPid));
 
         Assert.Equal((0, newer + "\n", ""), Run(Env(), null, "session", "--dir"));
     }
@@ -166,7 +161,7 @@ public sealed class SessionTests : IDisposable
     [Fact]
     public void Session_dir_is_found_while_the_proxy_is_dead_predates_the_channel_and_has_loaded_nothing()
     {
-        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid.Value,
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid,
             Responses: false, LoadCompleted: false, Diagnostics: null));
 
         Assert.Equal((0, dir + "\n", ""), Run(Env(sessionId: "session-a"), null, "session", "--dir"));
@@ -232,7 +227,7 @@ public sealed class SessionTests : IDisposable
     [Fact]
     public void Session_prints_the_state_of_an_unready_session()
     {
-        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid.Value,
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid,
             Responses: false, LoadCompleted: false, Diagnostics: null));
 
         var result = Run(Env(sessionId: "session-a"), null, "session");
@@ -312,7 +307,7 @@ public sealed class SessionTests : IDisposable
     [Fact]
     public void The_channel_requires_a_running_proxy()
     {
-        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid.Value,
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: DeadPid,
             Responses: false, LoadCompleted: false));
 
         var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
@@ -348,10 +343,29 @@ public sealed class SessionTests : IDisposable
             (exit, session, stderr));
     }
 
-    static int ExitedProcessId()
+    [Theory]
+    [InlineData("not-a-pid")]
+    [InlineData("0")]
+    [InlineData("-3")]
+    public void A_pid_that_is_not_a_positive_number_means_the_proxy_is_not_running(string pid)
     {
-        using var process = Process.Start(new ProcessStartInfo("/bin/sh", ["-c", "exit 0"]) { UseShellExecute = false })!;
-        process.WaitForExit();
-        return process.Id;
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a"));
+        File.WriteAllText(Path.Combine(dir, "pid"), pid + "\n");
+
+        var result = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Contains("\nproxy: not running\n", result.Stdout);
+    }
+
+    [Fact]
+    public void A_diagnostics_file_that_is_not_an_object_publishes_zero()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, Diagnostics: "[]"));
+
+        var result = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.Contains("\npublishes: 0\n", result.Stdout);
     }
 }

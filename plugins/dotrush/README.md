@@ -25,7 +25,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
-| `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then an all-or-nothing apply after you confirm |
+| `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace`, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
@@ -172,7 +172,7 @@ That file is the complete current set the skill reports from. `scripts/dotrush-d
 count moves and publishing has been quiet for two seconds, because DotRush signals no completion.
 
 ```bash
-"$PLUGIN/scripts/dotrush-diagnostics.sh" where          # session dir, proxy, chosen project, publish count
+"$PLUGIN/scripts/dotrush-diagnostics.sh" where          # dir, workspace, proxy, load, target, publishes, channel
 "$PLUGIN/scripts/dotrush-diagnostics.sh" solution 100   # analyze, wait, list up to 100 diagnostics
 "$PLUGIN/scripts/dotrush-diagnostics.sh" report         # last published results, no analysis
 ```
@@ -205,7 +205,9 @@ diff, and applies it only after you confirm.
 - `apply` re-checks every file's hash and refuses if any changed since the preview, writing nothing. It writes each
   file to a temp file (keeping BOM, line endings and file mode; a symlink's target is written), then moves all of
   them into place, and sends `textDocument/didOpen` for each changed file so DotRush re-reads it from disk. It prints
-  `renamed <Old> to <New>: N edits in M files` and the changed paths.
+  `renamed <Old> to <New>: N edits in M files` and the changed paths. Every refusal happens before the first file is
+  replaced; if a move itself fails (permissions, a full disk), it reports which files changed and which did not,
+  drops the plan and exits 1.
 - Files outside the workspace root or under a `bin`/`obj` directory are marked `(outside workspace)` in the
   preview; `apply` refuses them unless given `--outside-workspace`.
 - Plans belong to the server that produced them: a server restart clears `edits/`.
@@ -232,7 +234,14 @@ and builds nothing.
 ```
 
 Exit status: 0 success, 1 error (a JSON-RPC error prints as `code: message`), 2 usage, 3 timeout. Errors go to
-stderr prefixed with `dotrush-cli:`.
+stderr prefixed with `dotrush-cli:`. `help`, `-h` and `--help` print the table above.
+
+- `--timeout N` takes seconds above 0 and at most 86400 (24 h), once per command; anything else is exit 2 with
+  `--timeout needs a number of seconds greater than 0` (or `--timeout may be given only once`).
+- `<params-json>` must be a JSON object or array.
+- The wrapper needs `shasum` or `sha256sum` to hash the sources, and builds and runs with `DOTRUSH_DOTNET` when that
+  is set, else `dotnet` from `PATH` or `DOTNET_ROOT`. It always exports `DOTRUSH_DATA_DIR` as the data dir it derives
+  (`CLAUDE_PLUGIN_DATA` when set), overwriting an inherited value.
 
 ## Injecting custom LSP messages (the proxy)
 
@@ -254,6 +263,12 @@ echo '{"method":"$/setTrace","params":{"value":"verbose"}}' > "$FIFO"
 tail -f "$LOG"
 ```
 
+The injector opens the FIFO once for the life of the proxy and holds a write end of it itself, so it never sees
+end of file when a writer closes: writers can come and go without a line falling into a reopen. Write each message
+as one line in a single `write` (a line up to `PIPE_BUF`, 512 bytes on macOS, cannot interleave with another
+writer's). A writer that dies half way through a line leaves that partial line in the pipe, and it spoils the next
+writer's first line (logged as `INJECT skipped (bad JSON)`).
+
 Echo into the FIFO only **notifications** (no `id`, fire-and-forget, silently ignored if unknown). Send requests
 through the request channel below, so their responses come back to you rather than to Claude Code.
 
@@ -270,7 +285,10 @@ the FIFO, waits for the response file (default 60 s), prints the `result` as JSO
 A JSON-RPC error prints `code: message` and exits 1. On timeout it injects `$/cancelRequest` for the id, deletes a
 response that arrives within a second, and exits 3. Response files older than 10 minutes are removed when a
 `request` or `rename` starts. Before sending, it requires a running proxy, `responses/`, and `load-completed`, and
-names the next step when one is missing (run a C# LSP operation, restart Claude Code, or pick a project).
+names the next step when one is missing (run a C# LSP operation, restart Claude Code, or pick a project). A write
+that fails with a broken pipe (the proxy's read end is gone) is retried once, with the whole batch through a new
+open; `rename apply` sends all its `didOpen` notifications as one such batch. The CLI has no delivery receipt for a
+notification: a line is lost only if the proxy exits before reading it, and then DotRush is gone with it.
 
 ### DotRush-specific injectable notifications
 
@@ -316,8 +334,10 @@ Notes (learned while verifying this):
 - **Rename says "the running DotRush proxy predates the request channel"** (`session` shows
   `channel: unavailable (older proxy)`) → the language server started before the plugin was updated. Restart Claude
   Code. Diagnostics and project picking still work with the older proxy.
-- **The CLI does not build** → `dotrush-cli.sh` needs a .NET 10 SDK and prints the end of
-  `${CLAUDE_PLUGIN_DATA}/cli-build.log`; run `dotrush-cli.sh help` to retry.
+- **The CLI does not build** → `dotrush-cli.sh` needs a .NET 10 SDK (and `shasum` or `sha256sum`) and prints the end
+  of `${CLAUDE_PLUGIN_DATA}/cli-build.log`; run `dotrush-cli.sh help` to retry. Rename, `dotrush-diagnostics.sh`
+  (`where`, `solution`, `report`) and `dotrush-pick-project` all go through this wrapper, so a build that fails
+  stops all three, not only rename.
 - **`python3` not found when the LSP starts** → ensure `python3` is on the PATH Claude Code launches with,
   or set the `.lsp.json` `command` to your interpreter explicitly.
 - Disable the proxy's logging by setting `DOTRUSH_PROXY_LOG=""`.

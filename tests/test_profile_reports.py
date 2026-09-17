@@ -15,6 +15,12 @@ SUMMARIZE = ROOT / "plugins/dotrush/scripts/summarize-speedscope.py"
 PROFILE_SH = ROOT / "plugins/dotrush/scripts/dotrush-profile.sh"
 INSTALL_SH = ROOT / "plugins/dotrush/scripts/install-dotrush.sh"
 PROXY = ROOT / "plugins/dotrush/bin/lsp-proxy.py"
+# Prepended to a `python -c` script: loads lsp-proxy.py as `proxy`, with the modules the scripts use imported.
+PROXY_IMPORT = (
+    "import importlib.util, os, select, sys, threading, time\n"
+    f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
+    "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
+)
 PINNED = json.loads((ROOT / "plugins/dotrush/dotrush-version.json").read_text(encoding="utf-8"))
 
 
@@ -737,10 +743,8 @@ class InstallTests(unittest.TestCase):
         calls = self.root / "installer.calls"
         installer.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
         check = (
-            "import importlib.util\n"
-            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
-            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
-            "print(proxy.ensure_server())\n"
+            PROXY_IMPORT
+            + "print(proxy.ensure_server())\n"
         )
         server = self.data / "server"
         env = {**self.env, "DOTRUSH_SERVER_DIR": str(server), "DOTRUSH_INSTALL_SCRIPT": str(installer),
@@ -760,10 +764,8 @@ class InstallTests(unittest.TestCase):
         # The LanguageServer bundle has DotRush.dll and no native launcher; an explicit
         # DOTRUSH_REAL_BIN launcher still runs as it is.
         check = (
-            "import importlib.util, sys\n"
-            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
-            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
-            "print(proxy.server_command(sys.argv[1]))\n"
+            PROXY_IMPORT
+            + "print(proxy.server_command(sys.argv[1]))\n"
         )
         env = {**self.env, "DOTRUSH_PROXY_LOG": ""}
         dotnet = self.env["DOTRUSH_DOTNET"]
@@ -854,10 +856,8 @@ class DiagnosticsTests(unittest.TestCase):
             lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
         ])
         script = (
-            "import importlib.util, os, sys\n"
-            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
-            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
-            "os.makedirs(proxy.WS_DIR)\n"
+            PROXY_IMPORT
+            + "os.makedirs(proxy.WS_DIR)\n"
             "store = proxy.DiagnosticsStore(sys.argv[1])\n"
             "proxy.pump_server_to_client(sys.stdin, store)\n"
             "store.write()\n"
@@ -873,13 +873,15 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(list(data["files"]), [b])
         self.assertIsInstance(data["updated"], float)
 
-    def pump(self, stream):
-        """Runs the proxy's server->client pump over stream with a prepared responses/ dir; returns (stdout, WS_DIR)."""
+    def pump(self, stream, make_responses=True):
+        """Runs the proxy's server->client pump over stream; returns (stdout, WS_DIR).
+
+        responses/ is prepared as a proxy start would prepare it, unless make_responses is False."""
+        setup = ("os.makedirs(os.path.join(proxy.WS_DIR, 'responses'))\n" if make_responses
+                 else "os.makedirs(proxy.WS_DIR)\n")
         script = (
-            "import importlib.util, os, sys\n"
-            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
-            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
-            "os.makedirs(os.path.join(proxy.WS_DIR, 'responses'))\n"
+            PROXY_IMPORT
+            + f"{setup}"
             "proxy.pump_server_to_client(sys.stdin)\n"
             "sys.stderr.write(proxy.WS_DIR)\n"
         )
@@ -914,6 +916,18 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*")),
                          ["ws", ws.relative_to(self.root).as_posix(), ws.relative_to(self.root).as_posix() + "/responses"])
 
+    def test_a_response_is_withheld_even_when_it_cannot_be_written(self):
+        # responses/ is the channel's capability marker, created once at proxy start. A missing one is not
+        # recreated here: the write fails and is logged, and the response is still kept from Claude Code
+        # rather than forwarded to it, where it would answer a request Claude Code never sent.
+        uuid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        frame = lsp_frame({"jsonrpc": "2.0", "id": f"dotrush-cc:{uuid}", "result": 1})
+
+        stdout, ws = self.pump(frame, make_responses=False)
+
+        self.assertEqual(stdout, b"")
+        self.assertFalse((ws / "responses").exists())
+
     def test_workspace_dir_setup_empties_responses_and_removes_saved_edits(self):
         import hashlib
 
@@ -923,10 +937,8 @@ class DiagnosticsTests(unittest.TestCase):
         (ws / "edits").mkdir()
         (ws / "edits" / "0123456789ab.json").write_text("{}")
         script = (
-            "import importlib.util\n"
-            f"spec = importlib.util.spec_from_file_location('proxy', {str(PROXY)!r})\n"
-            "proxy = importlib.util.module_from_spec(spec); spec.loader.exec_module(proxy)\n"
-            "proxy.ensure_workspace_dir()\n"
+            PROXY_IMPORT
+            + "proxy.ensure_workspace_dir()\n"
         )
         env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "setup"}
         subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, check=True)
@@ -1106,6 +1118,64 @@ class DiagnosticsTests(unittest.TestCase):
         result = self.run_driver("report")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no DotRush language server has started", result.stderr)
+
+
+class InjectorTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.fifo = self.root / "inject.fifo"
+        os.mkfifo(self.fifo)
+
+    def run_proxy_script(self, body):
+        script = (
+            PROXY_IMPORT
+            + f"path = {str(self.fifo)!r}\n"
+            + body
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root),
+               "DOTRUSH_SESSION_ID": "injector", "DOTRUSH_INJECT_FIFO": str(self.fifo)}
+        result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.split()
+
+    def test_the_fifo_reader_never_sees_end_of_file_when_a_writer_leaves(self):
+        # A reader that reaches end of file closes and reopens, and lines a writer puts into the pipe between
+        # that end of file and the close are freed with the pipe, with no error to the writer. The injector
+        # holds a write end of its own, so the last writer leaving is not an end of file.
+        out = self.run_proxy_script(
+            "fifo, held = proxy.open_fifo_for_reading(path)\n"
+            "w = os.open(path, os.O_WRONLY); os.write(w, b'{\"method\":\"a\"}\\n'); os.close(w)\n"
+            "print(fifo.readline().strip().replace(' ', ''))\n"
+            "readable, _, _ = select.select([fifo], [], [], 0.3)\n"
+            "print('eof' if readable else 'waiting')\n"
+            "w = os.open(path, os.O_WRONLY | os.O_NONBLOCK); os.write(w, b'{\"method\":\"b\"}\\n'); os.close(w)\n"
+            "print(fifo.readline().strip().replace(' ', ''))\n"
+        )
+
+        self.assertEqual(out, ['{"method":"a"}', "waiting", '{"method":"b"}'])
+
+    def test_the_injector_frames_every_line_from_writers_that_come_and_go(self):
+        out = self.run_proxy_script(
+            "class Sink:\n"
+            "    def __init__(self): self.data = bytearray()\n"
+            "    def write(self, b): self.data += b\n"
+            "    def flush(self): pass\n"
+            "sink = Sink()\n"
+            "threading.Thread(target=proxy.injector, args=(sink,), daemon=True).start()\n"
+            "for n in range(50):\n"
+            "    w = os.open(path, os.O_WRONLY)\n"
+            "    os.write(w, ('{\"method\":\"m%d\"}\\n' % n).encode())\n"
+            "    os.close(w)\n"
+            "deadline = time.time() + 10\n"
+            "while sink.data.count(b'Content-Length') < 50 and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "print(sink.data.count(b'Content-Length'))\n"
+            "print(all(('\"m%d\"' % n).encode() in sink.data for n in range(50)))\n"
+        )
+
+        self.assertEqual(out, ["50", "True"])
+
 
 if __name__ == "__main__":
     unittest.main()

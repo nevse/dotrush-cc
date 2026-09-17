@@ -133,23 +133,16 @@ public sealed class DotRushServerFixture : IAsyncLifetime
     public static string Uri(string path) => new Uri(path).AbsoluteUri;
 
     // Runs the CLI in-process against this session, as the wrapper would with DOTRUSH_DATA_DIR exported.
-    public (int Exit, string Stdout, string Stderr) RunCli(params string[] args)
+    public CliResult RunCli(params string[] args) => Cli.Run(new Dictionary<string, string?>
     {
-        var env = new Dictionary<string, string?>
-        {
-            ["DOTRUSH_DATA_DIR"] = DataDir,
-            ["DOTRUSH_SESSION_ID"] = SessionId,
-        };
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-        var exit = Program.Run(args, env, Workspace, stdout, stderr);
-        return (exit, stdout.ToString(), stderr.ToString());
-    }
+        ["DOTRUSH_DATA_DIR"] = DataDir,
+        ["DOTRUSH_SESSION_ID"] = SessionId,
+    }, Workspace, args);
 
     // Runs the CLI until accept takes its result or the time is up, and returns the last result. Right after
     // load-completed the semantic model can still be settling, and a request may briefly find no symbol.
-    public async Task<(int Exit, string Stdout, string Stderr)> RunCliUntilAsync(
-        Func<(int Exit, string Stdout, string Stderr), bool> accept, TimeSpan within, params string[] args)
+    public async Task<CliResult> RunCliUntilAsync(
+        Func<CliResult, bool> accept, TimeSpan within, params string[] args)
     {
         var deadline = DateTime.UtcNow + within;
         while (true)
@@ -165,7 +158,7 @@ public sealed class DotRushServerFixture : IAsyncLifetime
 
     // textDocument/hover through the CLI's `request` at a 0-based position, retried until accept takes the result
     // JSON (for up to 60 s).
-    public Task<(int Exit, string Stdout, string Stderr)> HoverAsync(
+    public Task<CliResult> HoverAsync(
         string path, int line, int character, Func<string, bool> accept)
     {
         var hoverParams = new JsonObject
@@ -175,6 +168,16 @@ public sealed class DotRushServerFixture : IAsyncLifetime
         }.ToJsonString();
         return RunCliUntilAsync(result => result.Exit == 0 && accept(result.Stdout), TimeSpan.FromSeconds(60),
             "request", "textDocument/hover", hoverParams, "--timeout", "30");
+    }
+
+    // The 0-based LSP position of needle[offset] in text (the demo files are ASCII, so chars are UTF-16 units).
+    public static (int Line, int Character) PositionOf(string text, string needle, int offset)
+    {
+        var index = text.IndexOf(needle, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"'{needle}' not found in:\n{text}");
+        index += offset;
+        var lineStart = text.LastIndexOf('\n', index - 1) + 1;
+        return (text[..lineStart].Count(c => c == '\n'), index - lineStart);
     }
 
     // The proxy's log and stderr, appended to a failure message.
@@ -227,10 +230,10 @@ public sealed class DotRushServerFixture : IAsyncLifetime
             UseShellExecute = false,
             WorkingDirectory = Workspace,
         };
-        start.ArgumentList.Add(Path.Combine(WrapperTests.Checkout, "plugins/dotrush/bin/lsp-proxy.py"));
+        start.ArgumentList.Add(Path.Combine(TestProcesses.Checkout, "plugins/dotrush/bin/lsp-proxy.py"));
         start.Environment.Clear();
         // Without the MSBuild variables `dotnet test` leaves behind, which would steer DotRush's own MSBuild.
-        foreach (var (key, value) in WrapperTests.BaseEnvironment())
+        foreach (var (key, value) in TestProcesses.BaseEnvironment())
         {
             if (!key.StartsWith("DOTRUSH_", StringComparison.Ordinal))
             {

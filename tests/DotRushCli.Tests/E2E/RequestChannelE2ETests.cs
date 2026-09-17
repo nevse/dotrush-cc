@@ -13,9 +13,11 @@ public sealed partial class RequestChannelE2ETests(DotRushServerFixture server) 
     public async Task Request_hover_returns_the_servers_result_and_the_client_never_sees_the_response()
     {
         Assert.SkipUnless(DotRushServerFixture.Enabled, DotRushServerFixture.SkipReason);
-        // `public class Greeter` in Greeter.cs: line 2, the G at character 13 (0-based). load-completed can come a
-        // moment before the semantic model answers, so the fixture gives hover a few tries.
-        var result = await server.HoverAsync(server.GreeterPath, 2, 13, stdout => stdout.Contains("Greeter"));
+        // On the Greeter class name in Greeter.cs. load-completed can come a moment before the semantic model
+        // answers, so the fixture gives hover a few tries.
+        var (line, character) =
+            DotRushServerFixture.PositionOf(File.ReadAllText(server.GreeterPath), "class Greeter", "class ".Length);
+        var result = await server.HoverAsync(server.GreeterPath, line, character, stdout => stdout.Contains("Greeter"));
 
         Assert.True(result.Exit == 0 && result.Stdout.Contains("Greeter"),
             $"exit {result.Exit}\nstdout: {result.Stdout}\nstderr: {result.Stderr}{server.Diagnostics()}");
@@ -24,7 +26,7 @@ public sealed partial class RequestChannelE2ETests(DotRushServerFixture server) 
         Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(server.SessionDir, "responses")));
         Assert.DoesNotContain(server.Frames, frame =>
             frame["id"] is JsonValue id && id.TryGetValue<string>(out var text)
-            && text.StartsWith("dotrush-cc:", StringComparison.Ordinal));
+            && text.StartsWith(LspChannel.IdPrefix, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -33,26 +35,13 @@ public sealed partial class RequestChannelE2ETests(DotRushServerFixture server) 
         Assert.SkipUnless(DotRushServerFixture.Enabled, DotRushServerFixture.SkipReason);
         // The wrapper always exports DOTRUSH_DATA_DIR from dotrush_data_dir, which honours CLAUDE_PLUGIN_DATA, so
         // this builds the CLI for real into the proxy's temp data dir and looks the session up there.
-        var env = WrapperTests.BaseEnvironment();
+        var env = TestProcesses.BaseEnvironment();
         env["CLAUDE_PLUGIN_DATA"] = server.DataDir;
         env["DOTRUSH_SESSION_ID"] = server.SessionId;
-        var start = new System.Diagnostics.ProcessStartInfo("bash")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            WorkingDirectory = server.Workspace,
-        };
-        start.ArgumentList.Add(Path.Combine(WrapperTests.Checkout, "plugins/dotrush/scripts/dotrush-cli.sh"));
-        start.ArgumentList.Add("session");
-        start.Environment.Clear();
-        foreach (var (key, value) in env)
-        {
-            start.Environment[key] = value;
-        }
 
-        var result = WrapperTests.RunProcess(start, TimeSpan.FromMinutes(5));
+        var result = TestProcesses.RunScript(
+            Path.Combine(TestProcesses.Checkout, "plugins/dotrush/scripts/dotrush-cli.sh"), ["session"], env,
+            server.Workspace, TimeSpan.FromMinutes(5));
 
         Assert.True(result.Exit == 0, $"exit {result.Exit}\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
         var lines = result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);

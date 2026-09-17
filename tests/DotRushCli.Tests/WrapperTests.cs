@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
+using static DotRushCli.Tests.TestProcesses;
 
 namespace DotRushCli.Tests;
 
@@ -9,8 +9,6 @@ namespace DotRushCli.Tests;
 [UnsupportedOSPlatform("windows")]
 public sealed partial class WrapperTests : IDisposable
 {
-    internal static readonly string Checkout = FindCheckout();
-
     readonly DirectoryInfo root = Directory.CreateTempSubdirectory("dotrush-cli-wrapper-");
     readonly string plugin;
     readonly string data;
@@ -143,6 +141,37 @@ public sealed partial class WrapperTests : IDisposable
     }
 
     [Fact]
+    public void A_build_lock_left_by_a_dead_process_is_taken_over()
+    {
+        // As a session killed mid-build leaves it: the pid is past the largest one macOS and Linux hand out.
+        var held = Directory.CreateDirectory(Path.Combine(data, "cli.lock")).FullName;
+        File.WriteAllText(Path.Combine(held, "pid"), "2147483000\n");
+
+        var result = RunWrapper(["help"], Stubbed());
+
+        Assert.Equal(0, result.Exit);
+        Assert.Single(BuildCalls());
+        Assert.Single(HashDirs());
+        Assert.False(Directory.Exists(held));
+    }
+
+    [Fact]
+    public void A_build_lock_without_a_pid_file_is_reclaimed()
+    {
+        // A process killed between making the lock and writing its pid leaves no pid to check, so without this
+        // nothing would ever reclaim the lock and every later run would wait out the full timeout.
+        var held = Directory.CreateDirectory(Path.Combine(data, "cli.lock")).FullName;
+
+        var result = RunWrapper(["help"], Stubbed());
+
+        Assert.Equal(0, result.Exit);
+        Assert.Single(BuildCalls());
+        Assert.Single(HashDirs());
+        Assert.False(File.Exists(Path.Combine(held, "pid")));
+        Assert.False(Directory.Exists(held));
+    }
+
+    [Fact]
     public void Dotrush_cli_dir_skips_building()
     {
         var prebuilt = Path.Combine(root.FullName, "prebuilt");
@@ -166,7 +195,7 @@ public sealed partial class WrapperTests : IDisposable
         Assert.Equal(0, RunWrapper(["help"], Stubbed(), elsewhere).Exit);
 
         var build = Assert.Single(BuildCalls()).Split('|', 2);
-        Assert.Equal(RealPath(Tools), build[0]);
+        Assert.Equal(Posix.RealPath(Tools), build[0]);
         Assert.StartsWith("build DotRushCli/DotRushCli.csproj -c Release --nologo --artifacts-path ", build[1]);
     }
 
@@ -195,77 +224,9 @@ public sealed partial class WrapperTests : IDisposable
         return env;
     }
 
-    // The test host's environment without anything that would point the wrapper at a data dir or a
-    // build, and without the MSBuild variables `dotnet test` leaves behind for its child processes.
-    internal static Dictionary<string, string?> BaseEnvironment()
-    {
-        string[] dropped = ["CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "DOTRUSH_CLI_DIR", "DOTRUSH_DATA_DIR", "DOTRUSH_DOTNET"];
-        var env = new Dictionary<string, string?>();
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-        {
-            var key = (string)entry.Key;
-            if (dropped.Contains(key) || key.StartsWith("MSBUILD", StringComparison.OrdinalIgnoreCase)
-                || key == "DOTNET_HOST_PATH")
-            {
-                continue;
-            }
-            env[key] = (string?)entry.Value;
-        }
-        return env;
-    }
-
-    (int Exit, string Stdout, string Stderr) RunWrapper(string[] args, Dictionary<string, string?> env,
-        string? cwd = null, TimeSpan? timeout = null)
-    {
-        var start = new ProcessStartInfo("bash")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            WorkingDirectory = cwd ?? root.FullName,
-        };
-        start.ArgumentList.Add(Path.Combine(plugin, "scripts/dotrush-cli.sh"));
-        foreach (var arg in args)
-        {
-            start.ArgumentList.Add(arg);
-        }
-        start.Environment.Clear();
-        foreach (var (key, value) in env)
-        {
-            start.Environment[key] = value;
-        }
-        return RunProcess(start, timeout ?? TimeSpan.FromSeconds(30));
-    }
-
-    internal static (int Exit, string Stdout, string Stderr) RunProcess(ProcessStartInfo start, TimeSpan timeout)
-    {
-        using var process = Process.Start(start)!;
-        process.StandardInput.Close();
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit(timeout))
-        {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"{start.FileName} {string.Join(' ', start.ArgumentList)} did not exit in {timeout}");
-        }
-        return (process.ExitCode, stdout.Result, stderr.Result);
-    }
-
-    static string RealPath(string path)
-    {
-        var start = new ProcessStartInfo("bash")
-        {
-            RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
-        };
-        start.ArgumentList.Add("-c");
-        start.ArgumentList.Add("cd \"$1\" && pwd -P");
-        start.ArgumentList.Add("_");
-        start.ArgumentList.Add(path);
-        var (exit, stdout, stderr) = RunProcess(start, TimeSpan.FromSeconds(10));
-        Assert.True(exit == 0, stderr);
-        return stdout.Trim();
-    }
+    CliResult RunWrapper(string[] args, Dictionary<string, string?> env, string? cwd = null, TimeSpan? timeout = null) =>
+        RunScript(Path.Combine(plugin, "scripts/dotrush-cli.sh"), args, env, cwd ?? root.FullName,
+            timeout ?? TimeSpan.FromSeconds(30));
 
     static void CopyTree(string from, string to)
     {
@@ -282,17 +243,5 @@ public sealed partial class WrapperTests : IDisposable
                 CopyTree(dir, Path.Combine(to, name));
             }
         }
-    }
-
-    static string FindCheckout()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "plugins/dotrush/scripts/dotrush-install.sh")))
-            {
-                return dir.FullName;
-            }
-        }
-        throw new InvalidOperationException($"no dotrush-cc checkout above {AppContext.BaseDirectory}");
     }
 }

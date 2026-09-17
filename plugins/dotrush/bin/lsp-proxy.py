@@ -7,10 +7,19 @@ DotRush LSP stdio proxy (man-in-the-middle) for the `dotrush` Claude Code plugin
 - Forwards the client<->server byte streams verbatim, frame-by-frame.
 - Injects custom LSP messages into the client->server direction at frame
   boundaries (from a FIFO), without desyncing JSON-RPC request/response pairing.
+- Routes the request channel: a response whose id is the string "dotrush-cc:<uuid>"
+  is written to <WS_DIR>/responses/<uuid>.json instead of being forwarded, so plugin
+  tooling (scripts/dotrush-cli.sh) can send requests of its own and read the answers
+  without them reaching Claude Code. responses/ is created empty at startup and its
+  presence marks a proxy that has the channel; edits/ (saved rename plans) is removed,
+  because plans describe files as the server that is ending saw them.
+- Mirrors published diagnostics into <WS_DIR>/diagnostics.json.
 - Auto-installs the DotRush server on first run if it is missing.
 
 Control channel (newline-delimited JSON, one JSON-RPC message per line):
     echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$DOTRUSH_INJECT_FIFO"
+The injector opens the FIFO once and holds a write end of its own, so writers may come and go; write each
+line with a single write.
 
 Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_REAL_BIN        explicit DotRush server to run, DotRush.dll or a native launcher (overrides discovery)
@@ -72,7 +81,9 @@ LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
 # here as <uuid>.json instead of reaching Claude Code. The dir existing tells tooling the channel is available.
 RESPONSES_DIR = os.path.join(WS_DIR, "responses")
 RESPONSE_ID_PREFIX = "dotrush-cc:"
-RESPONSE_ID_SUFFIX = re.compile(r"[0-9a-f-]{36}")
+# The prefix as it appears in a frame's bytes: the opening quote of a JSON string, then the prefix.
+RESPONSE_ID_MARKER = b'"' + RESPONSE_ID_PREFIX.encode()
+RESPONSE_ID_SUFFIX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # Rename plans saved by the CLI; they describe files as this server saw them, so a new server drops them.
 EDITS_DIR = os.path.join(WS_DIR, "edits")
 
@@ -233,7 +244,7 @@ def pump_server_to_client(child_stdout, diagnostics=None):
             return
         header, body = f
         # The substring test keeps every other frame from being parsed here.
-        if b'"dotrush-cc:' in body and route_response(body):
+        if RESPONSE_ID_MARKER in body and route_response(body):
             continue
         os.write(1, header + body)
         # The substring test keeps large responses from being parsed a second time.
@@ -294,6 +305,26 @@ def pump_stderr(child_stderr):
         os.write(2, chunk)
 
 
+def open_fifo_for_reading(path):
+    """Open path for reading and keep a write end of our own open for as long as the reader lives.
+
+    Without it the reader sees end of file whenever the last writer closes, and a writer that opens the FIFO
+    between that end of file and the reader's close writes into a pipe that is already being dropped: the kernel
+    frees whatever it holds once both ends are gone, so those lines vanish with no error to the writer. With a
+    writer always present the reader never reaches end of file and one open serves every writer for the life of
+    the proxy. The non-blocking open lets the write end be opened before a writer exists; reads then block again.
+    Returns (text reader, write fd); the caller closes both.
+    """
+    read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        write_fd = os.open(path, os.O_WRONLY)
+        os.set_blocking(read_fd, True)
+        return os.fdopen(read_fd, "r", encoding="utf-8", errors="replace"), write_fd
+    except BaseException:
+        os.close(read_fd)
+        raise
+
+
 def injector(child_stdin):
     try:
         os.makedirs(os.path.dirname(FIFO_PATH), exist_ok=True)
@@ -304,33 +335,45 @@ def injector(child_stdin):
         return
     log(f"injector watching FIFO {FIFO_PATH}")
     while True:
+        held_writer = None
         try:
-            with open(FIFO_PATH, "r") as fifo:
-                for raw in fifo:
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                    except json.JSONDecodeError as e:
-                        log(f"INJECT skipped (bad JSON): {e}: {line[:120]}")
-                        continue
-                    if not isinstance(msg, dict) or "method" not in msg:
-                        log(f"INJECT skipped (needs JSON object with 'method'): {line[:120]}")
-                        continue
-                    msg.setdefault("jsonrpc", "2.0")
-                    body = json.dumps(msg).encode("utf-8")
-                    with _stdin_lock:
-                        try:
-                            child_stdin.write(frame(body))
-                            child_stdin.flush()
-                        except (OSError, ValueError) as e:
-                            log(f"INJECT write failed (server gone?): {e}")
-                            return
-                    log(f"INJECT -> {brief(body)}")
+            fifo, held_writer = open_fifo_for_reading(FIFO_PATH)
+            with fifo:
+                if not inject_lines(fifo, child_stdin):
+                    return
         except OSError as e:
             log(f"FIFO reopen after error: {e}")
             time.sleep(0.5)
+        finally:
+            if held_writer is not None:
+                os.close(held_writer)
+
+
+def inject_lines(fifo, child_stdin):
+    """Frame every JSON-RPC line read from fifo into the server's stdin; False once the server is gone."""
+    for raw in fifo:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError as e:
+            log(f"INJECT skipped (bad JSON): {e}: {line[:120]}")
+            continue
+        if not isinstance(msg, dict) or "method" not in msg:
+            log(f"INJECT skipped (needs JSON object with 'method'): {line[:120]}")
+            continue
+        msg.setdefault("jsonrpc", "2.0")
+        body = json.dumps(msg).encode("utf-8")
+        with _stdin_lock:
+            try:
+                child_stdin.write(frame(body))
+                child_stdin.flush()
+            except (OSError, ValueError) as e:
+                log(f"INJECT write failed (server gone?): {e}")
+                return False
+        log(f"INJECT -> {brief(body)}")
+    return True
 
 
 def pinned_ref():

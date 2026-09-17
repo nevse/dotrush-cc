@@ -121,8 +121,11 @@ public sealed class WorkspaceEditApplierTests : IDisposable
     [Fact]
     public void A_position_outside_the_file_is_rejected()
     {
-        Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", RenameAt(3)));
-        Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", Edit(0, 0, 0, 9, "x")));
+        const string message = "DotRush's view of Test.cs differs from disk; preview again after the file is saved";
+
+        Assert.Equal(message, Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", RenameAt(3))).Message);
+        Assert.Equal(message,
+            Assert.Throws<WorkspaceEditException>(() => ApplyToText("Greeter\n", Edit(0, 0, 0, 9, "x"))).Message);
     }
 
     [Fact]
@@ -206,7 +209,7 @@ public sealed class WorkspaceEditApplierTests : IDisposable
         var b = WriteFile("B.cs", "Greeter g;\n");
         var c = WriteFile("C.cs", "Greeter h;\n");
         var id = Save(Preview((a, [RenameAt(0, 6)]), (b, [RenameAt(0)]), (c, [RenameAt(0)])));
-        var applier = new WorkspaceEditApplier(writeFile: (path, bytes) =>
+        var applier = new WorkspaceEditApplier(writeFile: (path, bytes, mode) =>
         {
             if (path == b + WorkspaceEditApplier.TempSuffix)
             {
@@ -214,6 +217,7 @@ public sealed class WorkspaceEditApplierTests : IDisposable
                 throw new IOException("disk full");
             }
             File.WriteAllBytes(path, bytes);
+            File.SetUnixFileMode(path, mode);
         });
 
         var error = Assert.Throws<WorkspaceEditException>(() => applier.Apply(session, id, allowOutsideWorkspace: false));
@@ -255,6 +259,8 @@ public sealed class WorkspaceEditApplierTests : IDisposable
         Assert.Equal("Greeter g;\n", File.ReadAllText(b));
         Assert.Equal("Greeter h;\n", File.ReadAllText(c));
         Assert.Empty(Temps());
+        // A partly applied plan can never apply again: the files it wrote no longer match its hashes.
+        Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(session, "edits")));
     }
 
     // --- plans ---
@@ -348,6 +354,8 @@ public sealed class WorkspaceEditApplierTests : IDisposable
     [InlineData("null")]
     [InlineData("""{"workspace":"/w","oldName":"a","newName":"b","changes":{"/w/A.cs":[]},"files":{}}""")]
     [InlineData("""{"workspace":"/w","oldName":"a","changes":{},"files":{}}""")]
+    [InlineData("""{"workspace":"/w","oldName":"a","newName":"b","changes":{"/w/A.cs":null},"files":{"/w/A.cs":"h"}}""")]
+    [InlineData("""{"workspace":"/w","oldName":"a","newName":"b","changes":{"/w/A.cs":[null]},"files":{"/w/A.cs":"h"}}""")]
     public void A_plan_file_that_cannot_be_read_asks_to_preview_again(string content)
     {
         const string id = "0123456789ab";
@@ -391,7 +399,8 @@ public sealed class WorkspaceEditApplierTests : IDisposable
         var file = Assert.Single(preview.Files);
         Assert.Equal(path, file.Path);
         Assert.Equal("My Dir/Grüße.cs", file.RelativePath);
-        Assert.Equal(["Greeter"], file.RangeTexts);
+        Assert.Equal("class Greeter {}\n", file.Document.Text);
+        Assert.False(file.OutsideRoot);
         Assert.Equal("class Welcomer {}\n", File.ReadAllText(path));
     }
 
