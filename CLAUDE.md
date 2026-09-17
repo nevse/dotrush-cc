@@ -23,4 +23,13 @@ DotRush C# language server, bash scripts, skills, and a C# CLI (`tools/DotRushCl
 - Never send DotRush `dotrush/reloadWorkspace` before `load-completed` exists in the session dir: it races the first
   project load (analysis never starts, or every diagnostic appears twice).
 - DotRush returns Roslyn's minimal rename edits (`Greeter` → `Welcomer` arrives as `Greet` → `Welcom`); compare
-  whole identifiers on disk, not range text.
+  whole identifiers on disk, not range text, and check the identifier both before and after the edit.
+- Session lookup lives only in the CLI (`Session.Find`). Bash callers run `dotrush-cli.sh session --dir`; never
+  re-scan `ws/` from a script.
+- A request line must reach the FIFO in one write (`PIPE_BUF`), and .NET cannot open a FIFO non-blocking, so the
+  open and write run on a background task with a 2 s timeout; check the proxy's pid first.
+- The proxy's injector holds its own write end of `inject.fifo` (`open_fifo_for_reading`) so it never reaches EOF
+  between writers. Keep it: a reader that closes and reopens silently drops what a writer sends in between (no
+  EPIPE for lines written before the close). On EPIPE the CLI resends the whole batch, never from the failed line.
+- `responses/` in the session dir is the request channel's capability marker (created at proxy start, never
+  recreated later), and `edits/` — the saved rename plans — is cleared on every proxy start.

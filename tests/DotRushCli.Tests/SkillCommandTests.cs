@@ -8,7 +8,7 @@ namespace DotRushCli.Tests;
 [UnsupportedOSPlatform("windows")]
 public partial class SkillCommandTests
 {
-    static readonly string SkillsDir = Path.Combine(WrapperTests.Checkout, "plugins/dotrush/skills");
+    static readonly string SkillsDir = Path.Combine(TestProcesses.Checkout, "plugins/dotrush/skills");
 
     // The rest of the line after the script name, as in `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-cli.sh" session --dir`.
     [GeneratedRegex(@"dotrush-cli\.sh""?[ \t]+([^\r\n]*)")]

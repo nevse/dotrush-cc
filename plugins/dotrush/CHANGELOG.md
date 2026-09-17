@@ -3,14 +3,18 @@
 ### 0.7.0
 - Added `dotrush-rename`, a semantic rename of a C# symbol across the loaded solution through DotRush's Roslyn
   rename. Claude locates the symbol with the `LSP` tool, runs `rename preview`, shows the per-file edit counts and
-  the diff, and runs `rename apply` only after you confirm. Apply writes every file or none, keeps BOM, line endings
-  and file mode, refuses when a file changed since the preview, and sends `textDocument/didOpen` for each changed
-  file so DotRush re-reads it from disk. Files outside the workspace or under `bin`/`obj` need
-  `--outside-workspace`. Overloads, strings, comments and file names are not renamed.
+  the diff, and runs `rename apply` only after you confirm. Apply prepares every file before replacing any, so a
+  refusal (a file changed since the preview, a temp file that cannot be written) changes nothing; if replacing them
+  fails part way it names exactly which files changed and which did not, and drops the plan. It keeps BOM, line
+  endings and file mode, and sends `textDocument/didOpen` for each changed file so DotRush re-reads it from disk.
+  Files outside the workspace or under `bin`/`obj` need `--outside-workspace`. Overloads, strings, comments and
+  file names are not renamed.
 - The proxy has a request channel: a response whose id is `dotrush-cc:<uuid>` goes to `responses/<uuid>.json` in
   the session dir instead of to Claude Code, and an id with a non-uuid suffix is dropped. `responses/` is created
   empty at proxy start and marks a proxy with the channel; `edits/`, where rename plans are saved, is cleared at
-  start, so a server restart discards unapplied plans. Plain FIFO injection of notifications is unchanged.
+  start, so a server restart discards unapplied plans. The injector now opens the FIFO once and holds a write end
+  of it itself, so it no longer reaches end of file and reopens between writers; lines a writer sent while the
+  injector was reopening used to be lost without an error. Messages are still one JSON-RPC message per line.
 - Added a C# CLI, `tools/DotRushCli`, run through `scripts/dotrush-cli.sh`: `session [--dir]`,
   `request <method> <params-json> [--timeout N]`, `rename preview <file> <line> <column> <NewName> [--timeout N]`
   and `rename apply <plan-id> [--outside-workspace]`. Exit status 0 success, 1 error, 2 usage, 3 timeout; a request
@@ -22,7 +26,10 @@
   session's `sess-*` dir recorded for the same workspace, and it resolves symlinked paths. `dotrush-pick-project`
   looks only in this plugin's data dir rather than in every plugin's. `where` prints the CLI's `session` output,
   which adds a `channel:` line. Readiness checks and their messages are unchanged, including against 0.6.x
-  proxies; the lookup's error is now prefixed `dotrush-cli:`.
+  proxies; the lookup's error is now prefixed `dotrush-cli:`. Both paths therefore need the .NET 10 SDK and a
+  sha256 tool (`shasum` or `sha256sum`): the first call builds the CLI once per plugin version (`building the
+  DotRush CLI` on stderr), and a failed build makes `where`, `solution`, `report` and project picking fail with the
+  tail of `cli-build.log`.
 
 ### 0.6.1
 - Corrected the 0.6.0 claim that Claude Code does not show the model diagnostics published outside an edit. Checked

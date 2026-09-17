@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.Versioning;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -8,7 +9,7 @@ namespace DotRushCli;
 
 // `rename preview`: asks DotRush for the WorkspaceEdit of a rename, checks it against the disk, saves it as a plan
 // and prints a summary with the start of the diff.
-// `rename apply`: writes a saved plan all-or-nothing, then has DotRush re-read every changed file from disk.
+// `rename apply`: writes a saved plan, checking every file before replacing any, then has DotRush re-read every changed file from disk.
 [UnsupportedOSPlatform("windows")]
 public static partial class RenameCommand
 {
@@ -62,7 +63,6 @@ public static partial class RenameCommand
             return ready;
         }
         var channel = new LspChannel(session!);
-        channel.DeleteStaleResponses();
 
         EditPlan plan;
         IReadOnlyList<string> changed;
@@ -76,15 +76,15 @@ public static partial class RenameCommand
         }
         try
         {
-            changed = applier.Apply(session.Dir, planId, allowOutsideWorkspace: flags == 1);
+            changed = applier.Apply(session.Dir, planId, plan, allowOutsideWorkspace: flags == 1);
         }
         catch (WorkspaceEditException e)
         {
-            context.Stderr.WriteLine($"dotrush-cli: {e.Message}");
+            Fail(context, e.Message);
             // A move that failed part way still changed some files: DotRush must re-read those like any other.
             if (e.Changed.Count > 0 && OpenAgain(channel, plan, e.Changed) is { } problem)
             {
-                context.Stderr.WriteLine($"dotrush-cli: {NotToldMessage(problem)}");
+                Fail(context, NotToldMessage(problem));
             }
             return ExitCode.Error;
         }
@@ -103,14 +103,14 @@ public static partial class RenameCommand
         return ExitCode.Success;
     }
 
-    // Sends textDocument/didOpen for each path under the URI DotRush knows it by. DotRush re-reads an opened
-    // document from disk and ignores the text; its own file watcher misses an edit that keeps the file size.
-    // Stops at the first notification that cannot be written and returns why, else null.
-    static string? OpenAgain(LspChannel channel, EditPlan plan, IEnumerable<string> paths)
-    {
-        foreach (var path in paths)
-        {
-            var problem = channel.Notify("textDocument/didOpen", new JsonObject
+    // Sends textDocument/didOpen for each path under the URI DotRush knows it by, as one batch through a single
+    // FIFO open (see LspChannel.WriteLines for the retry). DotRush re-reads an opened document from disk and ignores
+    // the text; its own file watcher misses an edit that keeps the file size. Returns why the batch could not be
+    // written, else null — in which case some of its lines may still have arrived.
+    static string? OpenAgain(LspChannel channel, EditPlan plan, IEnumerable<string> paths) =>
+        channel.NotifyAll([.. paths.Select(path => (
+            Method: "textDocument/didOpen",
+            Parameters: (JsonNode?)new JsonObject
             {
                 ["textDocument"] = new JsonObject
                 {
@@ -119,17 +119,10 @@ public static partial class RenameCommand
                     ["version"] = 0,
                     ["text"] = "",
                 },
-            });
-            if (problem is not null)
-            {
-                return problem;
-            }
-        }
-        return null;
-    }
+            }))]);
 
     static string NotToldMessage(string problem) =>
-        $"the files were changed, but DotRush was not told to re-read them ({problem}); restart Claude Code so DotRush loads them from disk";
+        $"the files were changed, but DotRush may not have been told to re-read them ({problem}); restart Claude Code so DotRush loads them from disk";
 
     // The file as DotRush named it (the path Claude Code also uses), else its real path.
     static string DisplayPath(EditPlan plan, string path) =>
@@ -190,7 +183,8 @@ public static partial class RenameCommand
             {
                 return Fail(context, $"line {line}, column {column} of {file} is not on an identifier");
             }
-            if ((newName.StartsWith('@') ? newName[1..] : newName) == oldName)
+            var unescapedNewName = newName.StartsWith('@') ? newName[1..] : newName;
+            if (unescapedNewName == oldName)
             {
                 return Fail(context, $"the symbol is already named {oldName}");
             }
@@ -203,13 +197,9 @@ public static partial class RenameCommand
                 ["position"] = new JsonObject { ["line"] = position.Line, ["character"] = position.Character },
                 ["newName"] = newName,
             }, timeout);
-            switch (reply.Kind)
+            if (reply.Kind != LspReplyKind.Result)
             {
-                case LspReplyKind.Timeout:
-                    context.Stderr.WriteLine($"dotrush-cli: {reply.Message}");
-                    return ExitCode.Timeout;
-                case LspReplyKind.Error or LspReplyKind.Failed:
-                    return Fail(context, reply.Message);
+                return CliErrors.ReportFailure(context, reply);
             }
             if (ReadChanges(reply.Result) is not { } changes)
             {
@@ -217,10 +207,11 @@ public static partial class RenameCommand
             }
 
             var preview = WorkspaceEditApplier.Preview(workspace, oldName, newName, changes);
-            if (FileDifferingFromDisk(preview, oldName) is { } stale)
+            if (UnsupportedEdit(preview, oldName, newName, unescapedNewName) is { } problem)
             {
-                return Fail(context, $"DotRush's view of {stale} differs from disk; preview again after the file is saved");
+                return Fail(context, problem);
             }
+            WorkspaceEditApplier.DeleteStalePlans(session.Dir);
             var planId = WorkspaceEditApplier.SavePlan(session.Dir, preview);
             Print(context.Stdout, preview, WorkspaceEditApplier.DiffPath(session.Dir, planId), planId);
             return ExitCode.Success;
@@ -284,33 +275,64 @@ public static partial class RenameCommand
             or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.Format;
     }
 
-    // The first file of the preview with an edit that does not sit inside the old name on disk, or null. DotRush
-    // sends Roslyn's minimal text changes (Greeter -> Welcomer arrives as Greet -> Welcom, keeping the shared "er"),
-    // so each edit is judged by the whole identifier around its range, not by the range's own text.
-    static string? FileDifferingFromDisk(EditPreview preview, string oldName)
+    // Why the preview cannot be applied, or null when every edit turns the old name on disk into the new one.
+    // DotRush sends Roslyn's minimal text changes (Greeter -> Welcomer arrives as Greet -> Welcom, keeping the shared
+    // "er"), so each edit is judged by the whole identifier around its range, not by the range's own text: that
+    // identifier must read as the old name before the edit and as the new one after it. An edit that fails either
+    // test is a rename this command does not support (Roslyn resolving a conflict by qualifying or renaming
+    // something else) or a file DotRush has not re-read; both are reported as such rather than as a stale file,
+    // which would send the caller into waiting and previewing again forever.
+    static string? UnsupportedEdit(EditPreview preview, string oldName, string newName, string unescapedNewName)
     {
-        var accepted = AcceptedNames(oldName);
+        var oldNames = AcceptedNames(oldName);
+        var newNames = AcceptedNames(unescapedNewName);
         foreach (var file in preview.Files)
         {
-            var document = SourceDocument.Load(file.Path);
-            if (WorkspaceEditApplier.Sha256(document.Bytes) != preview.Plan.Files[file.Path])
-            {
-                return file.Path;
-            }
+            var text = file.Document.Text;
+            // A minimal diff can also split one name into several edits (a word moved inside the name arrives as a
+            // deletion and an insertion), so the edits sharing an identifier are judged together, not one by one.
+            var byName = new SortedDictionary<(int From, int To), List<(int Start, int End, string NewText)>>();
             foreach (var edit in preview.Plan.Changes[file.Path])
             {
-                if (!document.TryGetOffset(edit.Range.Start, out var start) || !document.TryGetOffset(edit.Range.End, out var end)
-                    || end < start || !accepted.Contains(EnclosingName(document.Text, start, end)))
+                if (!file.Document.TryGetOffset(edit.Range.Start, out var start)
+                    || !file.Document.TryGetOffset(edit.Range.End, out var end) || end < start)
                 {
-                    return file.Path;
+                    return WorkspaceEditException.StaleView(file.Path);
+                }
+                var name = EnclosingName(text, start, end);
+                if (!byName.TryGetValue(name, out var edits))
+                {
+                    byName[name] = edits = [];
+                }
+                edits.Add((start, end, edit.NewText));
+            }
+            foreach (var ((from, to), edits) in byName)
+            {
+                var before = text[from..to];
+                if (!oldNames.Contains(before))
+                {
+                    return $"DotRush's rename edits '{before}' in {file.Path}, which is not {oldName}: it needs edits "
+                        + "outside the old name (Roslyn conflict resolution), or its view of that file differs from disk; not supported";
+                }
+                // The edits cannot overlap (the preview's diff refuses that), so applying them last to first to the
+                // identifier gives what this file will read after the apply.
+                var result = new StringBuilder(before);
+                foreach (var (start, end, newText) in edits.OrderByDescending(edit => edit.Start))
+                {
+                    result.Remove(start - from, end - start).Insert(start - from, newText);
+                }
+                var after = result.ToString();
+                if (!newNames.Contains(after))
+                {
+                    return $"DotRush's rename would turn '{before}' in {file.Path} into '{after}', not {newName}; not supported";
                 }
             }
         }
         return null;
     }
 
-    // text[start..end] widened to the identifier it lies in, with the @ escaping that identifier.
-    static string EnclosingName(string text, int start, int end)
+    // The bounds of text[start..end] widened to the identifier it lies in, with the @ escaping that identifier.
+    static (int Start, int End) EnclosingName(string text, int start, int end)
     {
         while (start > 0 && IsIdentifierPart(text, start - 1))
         {
@@ -324,54 +346,72 @@ public static partial class RenameCommand
         {
             end++;
         }
-        return text[start..end];
+        return (start, end);
     }
 
-    // The identifiers an edit of the rename may lie in on disk: the old name, escaped with @, and for attributes the
-    // name with or without its Attribute suffix.
-    static HashSet<string> AcceptedNames(string oldName)
+    // The identifiers an edit of the rename may read as on disk, before (the old name) or after (the new one): the
+    // name, escaped with @, and for attributes the name with or without its Attribute suffix.
+    static HashSet<string> AcceptedNames(string name)
     {
-        List<string> names = [oldName, oldName + AttributeSuffix];
-        if (oldName.Length > AttributeSuffix.Length && oldName.EndsWith(AttributeSuffix, StringComparison.Ordinal))
+        List<string> names = [name, name + AttributeSuffix];
+        if (name.Length > AttributeSuffix.Length && name.EndsWith(AttributeSuffix, StringComparison.Ordinal))
         {
-            names.Add(oldName[..^AttributeSuffix.Length]);
+            names.Add(name[..^AttributeSuffix.Length]);
         }
-        return new HashSet<string>([.. names, .. names.Select(name => "@" + name)], StringComparer.Ordinal);
+        return new HashSet<string>([.. names, .. names.Select(accepted => "@" + accepted)], StringComparer.Ordinal);
     }
 
-    // The WorkspaceEdit's changes, uri → edits, or null when it has no edits at all.
+    // The WorkspaceEdit's changes, uri → edits, or null when it has no edits at all. A WorkspaceEdit may also carry
+    // its edits as documentChanges; DotRush sends changes, but which form a server picks follows the client's
+    // capabilities, so the other shape is named rather than reported as "no symbol at this position".
     static Dictionary<string, IReadOnlyList<LspTextEdit>>? ReadChanges(JsonElement result)
     {
-        if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("changes", out var changes)
-            || changes.ValueKind != JsonValueKind.Object)
+        if (result.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
         var byUri = new Dictionary<string, IReadOnlyList<LspTextEdit>>(StringComparer.Ordinal);
-        try
+        if (result.TryGetProperty("changes", out var changes) && changes.ValueKind == JsonValueKind.Object)
         {
-            foreach (var entry in changes.EnumerateObject())
+            try
             {
-                if (entry.Value.ValueKind == JsonValueKind.Null)
+                foreach (var entry in changes.EnumerateObject())
                 {
-                    continue;
-                }
-                var edits = entry.Value.Deserialize<List<LspTextEdit?>>(WorkspaceEditApplier.JsonOptions);
-                if (edits is null || edits.Contains(null))
-                {
-                    throw new JsonException("an edit is null");
-                }
-                if (edits.Count > 0)
-                {
-                    byUri[entry.Name] = [.. edits.OfType<LspTextEdit>()];
+                    if (entry.Value.ValueKind == JsonValueKind.Null)
+                    {
+                        continue;
+                    }
+                    var edits = entry.Value.Deserialize<List<LspTextEdit?>>(WorkspaceEditApplier.JsonOptions);
+                    if (edits is null || edits.Contains(null))
+                    {
+                        throw new JsonException("an edit is null");
+                    }
+                    if (edits.Count > 0)
+                    {
+                        byUri[entry.Name] = [.. edits.OfType<LspTextEdit>()];
+                    }
                 }
             }
+            catch (JsonException e)
+            {
+                throw new WorkspaceEditException($"DotRush returned a rename result that cannot be read: {e.Message}");
+            }
         }
-        catch (JsonException e)
+        if (byUri.Count > 0)
         {
-            throw new WorkspaceEditException($"DotRush returned a rename result that cannot be read: {e.Message}");
+            return byUri;
         }
-        return byUri.Count == 0 ? null : byUri;
+        // No edits in changes: a result carrying them as documentChanges instead (an empty or absent changes map
+        // beside it) is named rather than reported as "no symbol at this position". An empty documentChanges array
+        // carries no edits either, so it is the same nothing-to-do answer as an empty changes map.
+        if (result.TryGetProperty("documentChanges", out var documented)
+            && documented.ValueKind is not JsonValueKind.Null
+            && !(documented.ValueKind is JsonValueKind.Array && documented.GetArrayLength() == 0))
+        {
+            throw new WorkspaceEditException(
+                "DotRush returned the rename as documentChanges, which this command cannot apply; restart Claude Code, and report this if it persists");
+        }
+        return null;
     }
 
     static void Print(TextWriter stdout, EditPreview preview, string diffPath, string planId)
@@ -379,11 +419,11 @@ public static partial class RenameCommand
         stdout.WriteLine($"{Count(preview.Files.Sum(file => file.EditCount), "edit")} in {Count(preview.Files.Count, "file")}");
         foreach (var file in preview.Files)
         {
-            var outsideRoot = file.RelativePath == ".." || file.RelativePath.StartsWith("../", StringComparison.Ordinal);
             stdout.WriteLine(
-                $"{(outsideRoot ? file.Path : file.RelativePath)}: {Count(file.EditCount, "edit")}{(file.OutsideWorkspace ? " (outside workspace)" : "")}");
+                $"{(file.OutsideRoot ? file.Path : file.RelativePath)}: {Count(file.EditCount, "edit")}{(file.OutsideWorkspace ? " (outside workspace)" : "")}");
         }
-        var diffLines = preview.Diff.Split('\n');
+        // Splitting "" yields one empty line, which would print a stray blank line before `diff:`.
+        string[] diffLines = preview.Diff.Length == 0 ? [] : preview.Diff.Split('\n');
         var lineCount = preview.Diff.EndsWith('\n') ? diffLines.Length - 1 : diffLines.Length;
         foreach (var diffLine in diffLines.Take(Math.Min(lineCount, PrintedDiffLines)))
         {
@@ -402,22 +442,8 @@ public static partial class RenameCommand
     static bool TryParsePositive(string text, out int value) =>
         int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) && value >= 1;
 
-    static int Usage(CommandContext context, string? problem, params string[] synopses)
-    {
-        if (problem is not null)
-        {
-            context.Stderr.WriteLine($"dotrush-cli: {problem}");
-        }
-        foreach (var synopsis in synopses.Length == 0 ? [PreviewSynopsis] : synopses)
-        {
-            context.Stderr.WriteLine($"dotrush-cli: usage: dotrush-cli.sh {synopsis}");
-        }
-        return ExitCode.Usage;
-    }
+    static int Usage(CommandContext context, string? problem, params string[] synopses) =>
+        CliErrors.Usage(context, problem, synopses.Length == 0 ? [PreviewSynopsis] : synopses);
 
-    static int Fail(CommandContext context, string message)
-    {
-        context.Stderr.WriteLine($"dotrush-cli: {message}");
-        return ExitCode.Error;
-    }
+    static int Fail(CommandContext context, string message) => CliErrors.Fail(context, message);
 }

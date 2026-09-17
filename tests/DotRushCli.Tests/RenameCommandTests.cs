@@ -84,10 +84,11 @@ public sealed class RenameCommandTests : IDisposable
 
     string[] SavedPlans() => Directory.Exists(EditsDir) ? Directory.GetFiles(EditsDir) : [];
 
+    // A ping through the same FIFO: once the proxy has recorded it, anything the CLI sent is recorded too.
     void AssertNothingSent()
     {
-        Thread.Sleep(200);
-        Assert.Empty(proxy.Lines);
+        proxy.Ping();
+        Assert.Equal([FakeProxy.PingLine], proxy.Lines);
     }
 
     // --- identifier validation ---
@@ -389,6 +390,9 @@ public sealed class RenameCommandTests : IDisposable
     [InlineData("\"result\":{}")]
     [InlineData("\"result\":{\"changes\":{}}")]
     [InlineData("\"result\":{\"changes\":{\"file:///nowhere/Greeter.cs\":[]}}")]
+    // An empty documentChanges array carries no edits either: nothing to do, not a shape that cannot be applied.
+    [InlineData("\"result\":{\"documentChanges\":[]}")]
+    [InlineData("\"result\":{\"changes\":{},\"documentChanges\":[]}")]
     public void No_edits_means_no_symbol_at_the_position(string fields)
     {
         var greeter = WriteFile("Greeter.cs", GreeterText);
@@ -401,7 +405,7 @@ public sealed class RenameCommandTests : IDisposable
     }
 
     [Fact]
-    public void A_range_whose_disk_text_is_not_the_old_name_differs_from_disk()
+    public void A_range_whose_disk_text_is_not_the_old_name_is_refused_as_unsupported()
     {
         var greeter = WriteFile("Greeter.cs", GreeterText);
         var app = WriteFile("App.cs", AppText);
@@ -411,8 +415,82 @@ public sealed class RenameCommandTests : IDisposable
 
         var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
 
-        Assert.Equal((1, "", $"dotrush-cli: DotRush's view of {Posix.RealPath(app)} {DiffersFromDisk}\n"), result);
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.Equal(
+            $"dotrush-cli: DotRush's rename edits 'string' in {Posix.RealPath(app)}, which is not Greeter: it needs "
+            + "edits outside the old name (Roslyn conflict resolution), or its view of that file differs from disk; not supported\n",
+            result.Stderr);
         Assert.Empty(SavedPlans());
+    }
+
+    [Fact]
+    public void An_edit_that_would_not_produce_the_new_name_is_refused()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        // A range shifted inside the right identifier: replacing "reet" makes GWelcomer, not Welcomer.
+        AnswerRequestsWith(ChangesJson((greeter, [EditJson(GreeterText, 2, "reet", "Welcom")])));
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.Equal(
+            $"dotrush-cli: DotRush's rename would turn 'Greeter' in {Posix.RealPath(greeter)} into 'GWelcomer', not Welcomer; not supported\n",
+            result.Stderr);
+        Assert.Empty(SavedPlans());
+    }
+
+    // A server may send both keys, with the edits only in documentChanges: an empty changes map beside them must not
+    // read as "no symbol at this position".
+    [Theory]
+    [InlineData("")]
+    [InlineData("\"changes\":{},")]
+    [InlineData("\"changes\":{\"file:///nowhere/Greeter.cs\":[]},")]
+    public void A_rename_returned_as_document_changes_names_the_shape_it_cannot_apply(string changes)
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        AnswerRequestsWith("\"result\":{" + changes + "\"documentChanges\":[{\"textDocument\":{\"uri\":\"" + UriOf(greeter)
+            + "\",\"version\":null},\"edits\":[" + EditJson(GreeterText, 2, "Greeter", "Welcomer") + "]}]}");
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.Contains("returned the rename as documentChanges, which this command cannot apply", result.Stderr);
+        Assert.Empty(SavedPlans());
+    }
+
+    [Fact]
+    public void A_changes_entry_that_is_null_is_skipped()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        var app = WriteFile("App.cs", AppText);
+        AnswerRequestsWith("\"result\":{\"changes\":{\"" + UriOf(app) + "\":null,\"" + UriOf(greeter) + "\":["
+            + EditJson(GreeterText, 2, "Greeter", "Welcomer") + "]}}");
+
+        var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.StartsWith("1 edit in 1 file\nGreeter.cs: 1 edit\n", result.Stdout);
+    }
+
+    [Fact]
+    public void Preview_removes_plans_nobody_applied_for_an_hour()
+    {
+        var greeter = WriteFile("Greeter.cs", GreeterText);
+        Directory.CreateDirectory(EditsDir);
+        string[] stale = [Path.Combine(EditsDir, "aaaaaaaaaaaa.json"), Path.Combine(EditsDir, "aaaaaaaaaaaa.diff")];
+        foreach (var path in stale)
+        {
+            File.WriteAllText(path, "{}");
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddHours(-2));
+        }
+        var fresh = Path.Combine(EditsDir, "bbbbbbbbbbbb.json");
+        File.WriteAllText(fresh, "{}");
+
+        var planId = PreviewGreeterRename((greeter, GreeterText));
+
+        Assert.DoesNotContain(stale, File.Exists);
+        Assert.True(File.Exists(fresh));
+        Assert.True(PlanExists(planId));
     }
 
     [Fact]
@@ -503,7 +581,7 @@ public sealed class RenameCommandTests : IDisposable
     }
 
     [Fact]
-    public void A_trimmed_edit_inside_a_different_identifier_differs_from_disk()
+    public void A_trimmed_edit_inside_a_different_identifier_is_refused_as_unsupported()
     {
         var greeter = WriteFile("Greeter.cs", GreeterText);
         // Line 4's "Greet" is the whole method name Greet, not part of Greeter.
@@ -512,8 +590,47 @@ public sealed class RenameCommandTests : IDisposable
 
         var result = proxy.Run("rename", "preview", greeter, "3", "14", "Welcomer");
 
-        Assert.Equal((1, "", $"dotrush-cli: DotRush's view of {Posix.RealPath(greeter)} {DiffersFromDisk}\n"), result);
+        Assert.Equal((1, ""), (result.Exit, result.Stdout));
+        Assert.Contains($"DotRush's rename edits 'Greet' in {Posix.RealPath(greeter)}, which is not Greeter", result.Stderr);
         Assert.Empty(SavedPlans());
+    }
+
+    // A minimal diff can also split one name into several edits: GetFoo -> FooGet arrives as a deletion of "Get" and
+    // an insertion of it after "Foo". Judging each edit on its own would see "Foo" and refuse the rename.
+    [Fact]
+    public void Several_edits_inside_one_identifier_are_judged_together()
+    {
+        const string text = """
+            namespace Demo;
+
+            public class GetFoo
+            {
+                public static GetFoo Make() => new();
+            }
+
+            """;
+        var file = WriteFile("GetFoo.cs", text);
+        AnswerRequestsWith(ChangesJson((file, [.. ReorderEdits(text, 2), .. ReorderEdits(text, 4)])));
+
+        var result = proxy.Run("rename", "preview", file, "3", "14", "FooGet");
+
+        Assert.Equal((0, ""), (result.Exit, result.Stderr));
+        Assert.StartsWith("4 edits in 1 file\n", result.Stdout);
+        Assert.Contains("+public class FooGet\n", result.Stdout);
+        Assert.Contains("+    public static FooGet Make() => new();\n", result.Stdout);
+    }
+
+    // The two edits a minimal diff makes of GetFoo -> FooGet on the 0-based line of text.
+    static string[] ReorderEdits(string text, int line)
+    {
+        var start = text.Split('\n')[line].IndexOf("GetFoo", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"'GetFoo' not found on line {line}");
+        var end = start + "GetFoo".Length;
+        return
+        [
+            $$$"""{"range":{"start":{"line":{{{line}}},"character":{{{start}}}},"end":{"line":{{{line}}},"character":{{{start + 3}}}}},"newText":""}""",
+            $$$"""{"range":{"start":{"line":{{{line}}},"character":{{{end}}}},"end":{"line":{{{line}}},"character":{{{end}}}}},"newText":"Get"}""",
+        ];
     }
 
     [Fact]
@@ -615,7 +732,8 @@ public sealed class RenameCommandTests : IDisposable
             .OfType<JsonObject>()
             .Where(message => message["method"]?.GetValue<string>() == "textDocument/didOpen")];
 
-    // The didOpen notifications once count of them reached the proxy (or whatever arrived within 5 s).
+    // The didOpen notifications once count of them reached the proxy (or whatever arrived within 5 s). The ping
+    // afterwards makes an extra notification visible: it can only be recorded before the ping is.
     IReadOnlyList<JsonObject> WaitForDidOpens(int count)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -623,13 +741,13 @@ public sealed class RenameCommandTests : IDisposable
         {
             Thread.Sleep(20);
         }
-        Thread.Sleep(100);
+        proxy.Ping();
         return DidOpens();
     }
 
     void AssertNoDidOpen()
     {
-        Thread.Sleep(200);
+        proxy.Ping();
         Assert.Empty(DidOpens());
     }
 
@@ -797,6 +915,7 @@ public sealed class RenameCommandTests : IDisposable
     [InlineData("apply")]
     [InlineData("apply|0123456789ab|extra")]
     [InlineData("apply|0123456789ab|--force")]
+    [InlineData("apply|0123456789ab|--outside-workspace|--outside-workspace")]
     [InlineData("apply|--outside-workspace")]
     public void Malformed_apply_arguments_are_a_usage_error(string joinedArgs)
     {
@@ -844,7 +963,8 @@ public sealed class RenameCommandTests : IDisposable
         Assert.Equal(Renamed(AppText), File.ReadAllText(app));
         Assert.Equal(GreeterText, File.ReadAllText(greeter));
         AssertDidOpen(UriOf(app), Assert.Single(WaitForDidOpens(1)));
-        Assert.True(PlanExists(planId));
+        // The changed file no longer matches the plan's hashes, so the plan is gone rather than left to fail.
+        Assert.False(PlanExists(planId));
     }
 
     [Fact]
@@ -880,7 +1000,7 @@ public sealed class RenameCommandTests : IDisposable
         var lines = stderr.ToString().TrimEnd('\n').Split('\n');
         Assert.Equal(2, lines.Length);
         Assert.Contains($"changed: {Posix.RealPath(app)}; unchanged: {realGreeter}", lines[0]);
-        Assert.StartsWith("dotrush-cli: the files were changed, but DotRush was not told to re-read them (cannot write to the proxy's FIFO", lines[1]);
+        Assert.StartsWith("dotrush-cli: the files were changed, but DotRush may not have been told to re-read them (cannot write to the proxy's FIFO", lines[1]);
         Assert.Equal(AppText.Replace("new Greeter()", "new Welcomer()", StringComparison.Ordinal), File.ReadAllText(app));
         Assert.Equal(GreeterText, File.ReadAllText(greeter));
     }
@@ -903,7 +1023,7 @@ public sealed class RenameCommandTests : IDisposable
         Assert.Equal(1, result.Exit);
         Assert.Equal($"renamed Greeter to Welcomer: 1 edit in 1 file\n{greeter}\n", result.Stdout);
         Assert.Contains("cannot write to the proxy's FIFO", result.Stderr);
-        Assert.Contains("the files were changed, but DotRush was not told to re-read them", result.Stderr);
+        Assert.Contains("the files were changed, but DotRush may not have been told to re-read them", result.Stderr);
         Assert.Equal(Renamed(GreeterText), File.ReadAllText(greeter));
     }
 }

@@ -204,29 +204,50 @@ dotrush_install_locked() {
   echo "dotrush-install: DotRush $component $ref ($origin) installed in $target" >&2
 }
 
+# Takes the lock directory $1 that sessions sharing the data dir contend for, and records this process's PID in it.
+# A lock whose holder has exited is taken over, and so is one that still has no PID a few seconds on: the PID is
+# written right after the lock is made, so that lock was left by a process killed in between, and nothing else would
+# ever reclaim it. Waits at most $2 seconds, printing $5 once when it starts waiting. Failures go through the
+# function named $3, which must exit; $4 names the lock in them (e.g. "build lock").
+dotrush_lock() {
+  local lock="$1" timeout="$2" fail="$3" what="$4" waiting="$5" holder waited=0 pidless=0
+  until mkdir "$lock" 2>/dev/null; do
+    holder="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ -z "$holder" ]]; then
+      pidless=$((pidless + 1))
+      if (( pidless > 3 )); then
+        rm -rf "$lock" 2>/dev/null || "$fail" "cannot remove the abandoned $what $lock; remove it by hand"
+        pidless=0
+        continue
+      fi
+    elif ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$lock" 2>/dev/null || "$fail" "cannot remove the $what $lock left by process $holder; remove it by hand"
+      continue
+    else
+      pidless=0
+    fi
+    (( waited < timeout )) || "$fail" "timed out waiting for another session to release $lock"
+    (( waited > 0 )) || echo "$waiting" >&2
+    waited=$((waited + 1))
+    sleep 1
+  done
+  echo "$$" > "$lock/pid"
+}
+
 # Installs a component at the pinned ref into $2 unless it is already there; "force" as $3 reinstalls.
-# Sessions share the directory, so the install holds $2.lock, which records its PID: a lock left by a
-# killed process is taken over. The result is prepared beside $2 and swapped in whole, so nothing of a
+# Sessions share the directory, so the install holds $2.lock (see dotrush_lock): a lock left by a killed
+# process is taken over. The result is prepared beside $2 and swapped in whole, so nothing of a
 # previous ref survives, and a failed install leaves the previous one in place.
 dotrush_install() {
-  local component="$1" target="$2" force="${3:-}" repo ref lock holder waited=0 status
+  local component="$1" target="$2" force="${3:-}" repo ref lock status
   repo="$(dotrush_repo)" || exit 1
   ref="$(dotrush_ref)" || exit 1
   [[ "$force" == force ]] || ! dotrush_is_current "$component" "$target" "$ref" || return 0
   lock="$target.lock"
   mkdir -p "$(dirname "$target")"
-  until mkdir "$lock" 2>/dev/null; do
-    holder="$(cat "$lock/pid" 2>/dev/null || true)"
-    if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
-      rm -rf "$lock"
-      continue
-    fi
-    (( waited < 1800 )) || dotrush_fail "timed out waiting for another session to release $lock"
-    (( waited > 0 )) || echo "dotrush-install: waiting for another session installing the DotRush $component" >&2
-    waited=$((waited + 1))
-    sleep 1
-  done
-  echo "$$" > "$lock/pid"
+  # An install downloads and builds the server, so it may hold the lock for up to half an hour.
+  dotrush_lock "$lock" 1800 dotrush_fail "install lock" \
+    "dotrush-install: waiting for another session installing the DotRush $component"
   # dotrush_fail exits from inside the install, and the trap cleans up on that path too.
   trap "rm -rf $(printf '%q' "$lock") $(printf '%q' "$target").new.*" EXIT
   dotrush_install_locked "$component" "$target" "$repo" "$ref" "$force" && status=0 || status=$?

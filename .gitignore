@@ -7,6 +7,9 @@
 inject.fifo
 proxy.log
 
+# Temp files of a rename apply, left only by a kill between writing them and moving them into place
+*.dotrush-cc.tmp
+
 # Local per-machine environment (direnv account switcher; not for distribution)
 .envrc
 

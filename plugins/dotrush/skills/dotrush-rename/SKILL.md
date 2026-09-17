@@ -1,11 +1,11 @@
 ---
 name: dotrush-rename
-description: Rename a C# symbol (type, method, property, field, event, local or parameter) everywhere it is used across the loaded solution, through the Roslyn rename in this session's DotRush language server, with a diff preview and an all-or-nothing apply after the user confirms. Use when the user asks to rename a C# class, member or variable across the codebase, or to "rename X to Y" in C# code. Do not use for renaming files, folders or projects, text inside strings or comments, non-C# files, or a plain search-and-replace of text that is not one symbol.
+description: Rename a C# symbol (type, method, property, field, event, local or parameter) everywhere it is used across the loaded solution, through the Roslyn rename in this session's DotRush language server, with a diff preview and, after the user confirms, an apply that checks every file before replacing any. Use when the user asks to rename a C# class, member or variable across the codebase, or to "rename X to Y" in C# code. Do not use for renaming files, folders or projects, text inside strings or comments, non-C# files, or a plain search-and-replace of text that is not one symbol.
 ---
 
 # Rename a C# symbol with DotRush
 
-DotRush resolves the symbol with Roslyn, so only real references to that one symbol change: a same-named local, member or type elsewhere is left alone, which a text search-and-replace cannot promise. The rename runs in two steps through the plugin's CLI: `rename preview` asks DotRush for the edits, checks them against the files on disk and saves them as a plan; `rename apply` writes that plan to every file or to none.
+DotRush resolves the symbol with Roslyn, so only real references to that one symbol change: a same-named local, member or type elsewhere is left alone, which a text search-and-replace cannot promise. The rename runs in two steps through the plugin's CLI: `rename preview` asks DotRush for the edits, checks them against the files on disk and saves them as a plan; `rename apply` prepares every file before replacing any, so anything it refuses changes nothing, and a failure while replacing them names exactly which files changed.
 
 Run both steps with the Bash tool. The first call of the CLI builds it once per plugin version, which takes a few seconds and prints `building the DotRush CLI` on stderr.
 
@@ -81,12 +81,16 @@ Every error goes to stderr prefixed with `dotrush-cli: `. Exit status: 1 error, 
 
 - `'<name>' is not a valid C# identifier` (exit 2), with `('<name>' is a reserved C# keyword; use @<name>)` for a keyword — ask the user for a valid name, or offer the `@` form.
 - `<line> and <column> must be whole numbers starting at 1` (exit 2) — fix the arguments.
+- `--timeout needs a number of seconds greater than 0` or `--timeout may be given only once` (exit 2) — the value must be a number above 0 and at most 86400 (24 h), passed once. Fix it and retry.
 - `<file> does not exist` — check the path.
 - `the session dir <dir> does not record its workspace; restart Claude Code` — the session's runtime dir is incomplete; tell the user to restart Claude Code.
 - `line <line>, column <column> of <file> is not on an identifier` — the column points at whitespace, punctuation or a number. Read the line again, recount the column so it lands on the identifier, and retry.
 - `the symbol is already named <Name>` — the new name equals the current one; nothing to do.
 - `no symbol at this position; check it with documentSymbol` — DotRush found nothing to rename there: the position is on a keyword or another word that is not a renameable symbol, or the file is not part of a loaded project. Check the position with `documentSymbol`. Right after a project load DotRush can briefly find no symbol, so retry once after a few seconds before telling the user.
-- `DotRush's view of <file> differs from disk; preview again after the file is saved` — DotRush has not seen the latest version of that file (it was just edited, or edited outside Claude Code). Wait a few seconds and preview again; if it repeats, run an LSP operation such as `documentSymbol` on that file and preview again. Nothing was saved.
+- `DotRush's view of <file> differs from disk; preview again after the file is saved` — an edit lands past the end of that file, so DotRush has not seen its latest version (it was just edited, or edited outside Claude Code). Wait a few seconds and preview again; if it repeats, run an LSP operation such as `documentSymbol` on that file and preview again. Nothing was saved.
+- `DotRush's rename edits '<other>' in <file>, which is not <Old>: it needs edits outside the old name (Roslyn conflict resolution), or its view of that file differs from disk; not supported` — Roslyn wanted to change an identifier other than the old name, usually to resolve a conflict the new name creates (qualifying an unrelated name, for example). Do not keep waiting and re-previewing: tell the user this rename needs conflict-resolution edits the skill does not apply, and offer a different new name. One retry is worth it only if that file was edited moments ago; re-read it with `documentSymbol` first. Nothing was saved.
+- `DotRush's rename would turn '<Old>' in <file> into '<Other>', not <New>; not supported` — the edit would not produce the requested name. Report it as it is; nothing was saved.
+- `DotRush returned the rename as documentChanges, which this command cannot apply; restart Claude Code, and report this if it persists` — the server answered in the other WorkspaceEdit shape. Nothing was saved; this is a plugin limitation, so report it rather than retrying.
 - `no response to textDocument/rename within <N> s; the request was cancelled` (exit 3) — DotRush is still busy (a large solution, or a project still loading). Retry with a larger `--timeout`, and a Bash timeout above it.
 - `<code>: <message>` — DotRush answered with an error. Report it as it is.
 
@@ -96,8 +100,8 @@ Every error goes to stderr prefixed with `dotrush-cli: `. Exit status: 1 error, 
 - `<path> changed since preview; run rename preview again` — a file changed after the preview; nothing was written. Preview again, show the new diff and ask again.
 - `<path> is outside the workspace <root> (or under bin/obj); apply with --outside-workspace to edit it` (or `<paths> are outside … to edit them`) — nothing was written. Ask the user whether those files may be edited; add `--outside-workspace` only if they agree, otherwise cancel.
 - `cannot write <file>.dotrush-cc.tmp: <reason>; no file was changed` — a temporary file could not be written (permissions, full disk). Report the reason; no file changed.
-- `cannot replace <path>: <reason>; changed: <paths>; unchanged: <paths>` — a write failed part way, so the rename is incomplete. Tell the user exactly which files changed and which did not, read the changed ones again, and let the user decide how to proceed (for example restoring the changed files with git). DotRush was still told to re-read the changed files.
-- `the files were changed, but DotRush was not told to re-read them (<reason>); restart Claude Code so DotRush loads them from disk` — the rename was written (the summary and changed files are still printed on stdout) but DotRush may still see the old text. Report the rename, read the changed files again, and tell the user to restart Claude Code before relying on C# LSP results for those files.
+- `cannot replace <path>: <reason>; changed: <paths>; unchanged: <paths>` — a write failed part way, so the rename is incomplete. Tell the user exactly which files changed and which did not, read the changed ones again, and let the user decide how to proceed (for example restoring the changed files with git). DotRush was still told to re-read the changed files. The plan is dropped, because the changed files no longer match it: finishing the rename means previewing again.
+- `the files were changed, but DotRush may not have been told to re-read them (<reason>); restart Claude Code so DotRush loads them from disk` — the rename was written (the summary and changed files are still printed on stdout) but DotRush may still see the old text in some of them. Report the rename, read the changed files again, and tell the user to restart Claude Code before relying on C# LSP results for those files.
 - Any other `dotrush-cli:` message (a file that is not valid UTF-8, a file that cannot be read, overlapping edits) — report it as it is; nothing was written.
 
 ## Limits

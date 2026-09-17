@@ -6,7 +6,8 @@
   injector only suits notifications: an injected request's response flows back to Claude Code.
 - Build a C# CLI (`DotRushCli`) on top of it with `session`, `request`, `rename preview` and `rename apply`.
 - Ship a `dotrush-rename` skill: semantic, solution-wide renames through Roslyn with a diff preview and an
-  all-or-nothing apply after the user confirms. Roslyn resolves symbols, so it does not hit same-named
+  apply, after the user confirms, that checks every file before replacing any (a failure part way names which
+  files changed). Roslyn resolves symbols, so it does not hit same-named
   identifiers the way a text search-and-replace does.
 - Replace the session-directory **lookup** duplicated across `dotrush-diagnostics.sh` and the
   `dotrush-pick-project` skill with one `session` command. Readiness checks stay per caller, so those skills keep
@@ -112,7 +113,7 @@
   needs `responses/`.
 
 ## Technical Details
-- **Request line** written to `inject.fifo` (unchanged injector), as a single `write` of the whole line including
+- **Request line** written to `inject.fifo` (the injector holds its own write end, see FIFO write), as a single `write` of the whole line including
   `\n`: `{"jsonrpc":"2.0","id":"dotrush-cc:<uuid>","method":"…","params":{…}}`. `<uuid>` is a lowercase GUID
   matching `^[0-9a-f-]{36}$`; the proxy drops and logs any `dotrush-cc:` response whose suffix does not match, so
   an id never becomes a path. Lines longer than `PIPE_BUF` (512 bytes on macOS) can interleave with a concurrent
@@ -145,7 +146,8 @@
   retry").
 - **FIFO write:** .NET cannot open a FIFO with `O_NONBLOCK`, and opening for write blocks until a reader exists.
   The proxy's injector holds it open while alive, so check the PID first, then open and write on a background task
-  with a 2 s timeout that fails with "cannot write to the proxy's FIFO".
+  with a 2 s timeout that fails with "cannot write to the proxy's FIFO". A batch (apply's didOpens) goes through one
+  open; on EPIPE it is resent whole through a new open, keeping the failed one open until the new open returns.
 - **Exit codes:** 0 success; 1 error (including a JSON-RPC error response, printed as `code: message`); 2 usage;
   3 timeout (matches `dotrush-diagnostics.sh`).
 - **CLI entry point:** `static int Run(string[] args, IReadOnlyDictionary<string, string?> env, string cwd,
@@ -162,9 +164,14 @@
   not valid UTF-8. Line breaks for position mapping are the ones Roslyn `SourceText` uses: `\r\n`, `\n`, `\r`,
   U+0085, U+2028, U+2029. Edits per file sorted by start descending; overlapping edits rejected.
 - **Preview consistency check:** the requested position must land on an identifier character (clear error
-  otherwise); that identifier is `oldName`. DotRush sends Roslyn's minimal text changes, so each returned
-  range is widened on disk to the identifier it lies in (with a leading `@`), which must equal `oldName`, `@oldName`,
-  or `oldName` without an `Attribute` suffix / `oldNameAttribute`; otherwise refuse with "DotRush's view of
+  otherwise); that identifier is `oldName`. DotRush sends Roslyn's minimal text changes, so each returned range is
+  widened on disk to the identifier it lies in (with a leading `@`), and the edits landing in the same identifier are
+  judged together, since one name can arrive as several edits. That identifier must equal `oldName`, `@oldName`, or
+  `oldName` without an `Attribute` suffix / `oldNameAttribute` before the edits — otherwise refuse with "DotRush's
+  rename edits '<other>' in <file>, which is not <Old>: it needs edits outside the old name (Roslyn conflict
+  resolution), or its view of that file differs from disk; not supported" — and must read as the matching form of
+  `newName` once they are applied, otherwise refuse with "DotRush's rename would turn '<old>' in <file> into
+  '<result>', not <New>; not supported". A range that lies outside the file on disk refuses with "DotRush's view of
   <file> differs from disk; preview again after the file is saved".
 - **Writing:** symlinked files are resolved to their target and the target is written. For each file write
   `<target>.dotrush-cc.tmp` with the original Unix file mode (`File.GetUnixFileMode` / `SetUnixFileMode`); if any
@@ -343,6 +350,7 @@
 - [x] run the e2e and unit suites - must pass before task 11
 - ⚠️ the real DotRush returns Roslyn's minimal text changes (`Greeter` → `Welcomer` arrives as `Greet` → `Welcom`), so preview's consistency check now compares the whole identifier on disk around each edit with the accepted old-name forms, not the range text
 - ⚠️ on macOS DotRush's watcher also picked up a same-size in-place write within 5 s (temporary probe, no didOpen), so hover after apply confirms the outcome but cannot isolate didOpen; the e2e test additionally checks the proxy log for one injected `didOpen` per changed file
+- ⚠️ the injector used to close and reopen the FIFO whenever the last writer left; a writer that opened it in that window wrote into a pipe that was being dropped, and its lines vanished without an error (a one-file rename's didOpen could be lost with apply exiting 0). The injector now holds a write end of its own and never reaches end of file, and the CLI resends a whole batch on EPIPE. There is still no delivery receipt for a notification: a line is lost only if the proxy exits before reading it
 
 ### Task 11: Add the `dotrush-rename` skill
 

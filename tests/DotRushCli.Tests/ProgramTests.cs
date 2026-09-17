@@ -5,13 +5,7 @@ namespace DotRushCli.Tests;
 [UnsupportedOSPlatform("windows")]
 public class ProgramTests
 {
-    static (int Exit, string Stdout, string Stderr) Run(params string[] args)
-    {
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-        var exit = Program.Run(args, new Dictionary<string, string?>(), Path.GetTempPath(), stdout, stderr);
-        return (exit, stdout.ToString(), stderr.ToString());
-    }
+    static CliResult Run(params string[] args) => Cli.Run(new Dictionary<string, string?>(), Path.GetTempPath(), args);
 
     [Fact]
     public void No_arguments_print_usage_to_stderr_and_return_2()
@@ -34,10 +28,13 @@ public class ProgramTests
         Assert.Contains("Usage:", stderr);
     }
 
-    [Fact]
-    public void Help_prints_usage_to_stdout_and_returns_0()
+    [Theory]
+    [InlineData("help")]
+    [InlineData("-h")]
+    [InlineData("--help")]
+    public void Help_prints_usage_to_stdout_and_returns_0(string argument)
     {
-        var (exit, stdout, stderr) = Run("help");
+        var (exit, stdout, stderr) = Run(argument);
 
         Assert.Equal(0, exit);
         Assert.StartsWith("Usage:", stdout);

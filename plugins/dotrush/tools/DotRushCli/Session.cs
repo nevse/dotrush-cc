@@ -54,7 +54,7 @@ public sealed record SessionState(string Dir)
     }
 }
 
-public static class Session
+public static class SessionCommand
 {
     public const string Synopsis = "session [--dir]";
 
@@ -65,10 +65,9 @@ public static class Session
         var dirOnly = args is ["--dir"];
         if (args.Length > 0 && !dirOnly)
         {
-            context.Stderr.WriteLine($"dotrush-cli: usage: dotrush-cli.sh {Synopsis}");
-            return ExitCode.Usage;
+            return CliErrors.Usage(context, null, Synopsis);
         }
-        var session = Locate(context);
+        var session = Session.Locate(context);
         if (session is null)
         {
             return ExitCode.Error;
@@ -90,7 +89,11 @@ public static class Session
         stdout.WriteLine(session.HasChannel ? "channel: available" : "channel: unavailable (older proxy)");
         return ExitCode.Success;
     }
+}
 
+// Finds this session's runtime dir and checks it is ready for the request channel.
+public static class Session
+{
     // The checks `request` and `rename` need before they write to the proxy's FIFO, in order.
     public static int RequireChannel(CommandContext context, out SessionState? session)
     {
@@ -110,8 +113,7 @@ public static class Session
             : null;
         if (problem is not null)
         {
-            context.Stderr.WriteLine($"dotrush-cli: {problem}");
-            return ExitCode.Error;
+            return CliErrors.Fail(context, problem);
         }
         session = found;
         return ExitCode.Success;
@@ -123,15 +125,15 @@ public static class Session
         var dataDir = Get(context.Env, "DOTRUSH_DATA_DIR");
         if (dataDir is null)
         {
-            context.Stderr.WriteLine("dotrush-cli: DOTRUSH_DATA_DIR is not set; run the CLI through scripts/dotrush-cli.sh");
+            CliErrors.Write(context.Stderr, "DOTRUSH_DATA_DIR is not set; run the CLI through scripts/dotrush-cli.sh");
             return null;
         }
         var ws = Path.Combine(dataDir, "ws");
         var dir = Find(ws, context.Env, context.Cwd);
         if (dir is null)
         {
-            context.Stderr.WriteLine(
-                $"dotrush-cli: no DotRush language server has started in this session (looked in {ws}); run any C# LSP operation first");
+            CliErrors.Write(context.Stderr,
+                $"no DotRush language server has started in this session (looked in {ws}); run any C# LSP operation first");
             return null;
         }
         return new SessionState(dir);
@@ -201,7 +203,7 @@ public static class Session
         env.TryGetValue(name, out var value) && !string.IsNullOrEmpty(value) ? value : null;
 }
 
-public static partial class Posix
+public static class Posix
 {
     [DllImport("libc", SetLastError = true)]
     static extern int kill(int pid, int sig);

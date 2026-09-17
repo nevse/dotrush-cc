@@ -40,7 +40,9 @@ Or enable it declaratively in `.claude/settings.json`:
 - `curl` and `unzip` to download DotRush release bundles, or `git` to build DotRush when the pin is not such a release
 - `python3` (the proxy is a stdlib-only Python 3 script)
 - A .NET 10 SDK on PATH (DotRush loads/analyzes MSBuild projects, runs on .NET 10+, and builds from source with it;
-  the plugin also builds its small C# CLI with it on first use, used by the rename and diagnostics skills)
+  the plugin also builds its small C# CLI with it on first use, used by the rename, diagnostics and project-picking
+  skills)
+- `shasum` or `sha256sum` (the CLI wrapper hashes its sources to pick the build directory)
 
 ## Quick start after install
 
@@ -81,8 +83,9 @@ Behind these are `findReferences`, `goToImplementation`, `hover`, `goToDefinitio
 > rename `OrderService.PlaceOrder` to `SubmitOrder`
 
 Claude locates the method, asks DotRush for the Roslyn rename, and shows you the edit count per file and the diff.
-Nothing is written until you confirm; then every file changes or none does, and a file edited since the preview
-makes it stop and preview again. Same-named members of other types stay as they are. Overloads, strings, comments
+Nothing is written until you confirm, and a file edited since the preview makes it stop and preview again. Every
+file is prepared before any is replaced, so a refusal changes nothing; should replacing them fail part way, it names
+exactly which files changed and which did not. Same-named members of other types stay as they are. Overloads, strings, comments
 and file names are not renamed (the `dotrush-rename` skill).
 
 **Profile CPU** of a running app:
@@ -139,7 +142,7 @@ dotrush-cc/
     ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
     ├── skills/dotrush-pick-project/      # picks the .sln/.slnx/.csproj DotRush loads, applied live
     ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
-    ├── skills/dotrush-rename/            # semantic rename: preview, confirm, all-or-nothing apply
+    ├── skills/dotrush-rename/            # semantic rename: preview, confirm, apply (checks every file first)
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
     ├── README.md                         # plugin usage
