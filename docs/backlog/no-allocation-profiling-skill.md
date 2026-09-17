@@ -11,5 +11,11 @@ the dxvcs #46984 session the headline result (1.53 GB -> 732 KB allocated per lo
 
 Proposed: `dotrush-profile-allocations` on `dotnet-trace --profile gc-verbose` (`AllocationTick`), reporting
 bytes and object counts by type and by allocating stack. Needs a provider choice in `trace` first
-([[profile-trace-providers-fixed]]). Also check what DotRush's bundled `dotnet-trace` and TraceEvent convert
-`AllocationTick` into.
+([[profile-trace-providers-fixed]]).
+
+Blocked on DotRush: at `2026.09` (`JaneySprings/diagnostics@89a1406`) `dotnet-trace convert` and `report` build
+only thread-time stacks (`SampleProfilerThreadTimeComputer`, `IncludeEventSourceEvents = false`), so every
+`AllocationTick` is dropped. Requested an allocation output format upstream:
+https://github.com/JaneySprings/DotRush/issues/206. Before starting, check whether it is closed and which ref
+ships it, then bump `dotrush-version.json`. If it stalls, the fallback is reading the nettrace in `DotRushCli`
+through the `Microsoft.Diagnostics.Tracing.TraceEvent` package.
