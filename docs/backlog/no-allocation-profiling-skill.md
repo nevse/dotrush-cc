@@ -10,8 +10,8 @@ the dxvcs #46984 session the headline result (1.53 GB -> 732 KB allocated per lo
 `GC.GetAllocatedBytesForCurrentThread()` in hand-written probe code (FINDINGS F4).
 
 Proposed: `dotrush-profile-allocations` on `dotnet-trace --profile gc-verbose` (`AllocationTick`), reporting
-bytes and object counts by type and by allocating stack. Needs a provider choice in `trace` first
-([[profile-trace-providers-fixed]]).
+bytes and object counts by type and by allocating stack. Capturing is done since 0.7.4:
+`trace <pid> --profile gc-verbose` records the events with the sampler kept on; only the report is missing.
 
 Blocked on DotRush: at `2026.09` (`JaneySprings/diagnostics@89a1406`) `dotnet-trace convert` and `report` build
 only thread-time stacks (`SampleProfilerThreadTimeComputer`, `IncludeEventSourceEvents = false`), so every

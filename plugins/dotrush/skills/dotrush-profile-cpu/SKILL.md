@@ -51,6 +51,14 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    - Report the numbers as on-stack time of that thread, not CPU, and name the `Runtime` line. For CPU-only numbers, suggest running the target on a runtime that tags samples, when that is possible.
    - If every thread sits in a wait, the capture was idle: say so and re-capture while the workload runs rather than diagnosing the waits.
 
+   **Add events to a capture only when the user asks for them** or another tool will read the `.nettrace` (PerfView, Visual Studio). `trace` and `trace --launch` take, anywhere before `--`:
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace <PID> 00:00:30 --profile gc-verbose [--buffersize 512]
+   ```
+
+   `--profile` takes comma-separated `dotnet-trace` profiles (`gc-verbose` for GC and allocation-sampling events, `gc-collect`, `database`; `dotnet-common,dotnet-sampled-thread-time` is the default pair), `--providers` extra EventPipe providers in `dotnet-trace`'s syntax without spaces, and `--buffersize` the buffer in MB (256 by default; raise it if `dotnet-trace` reports dropped events). The helper always keeps `dotnet-sampled-thread-time`, since the report is built from it. `cpu-sampling` and `thread-time` are Linux kernel profiles for `collect-linux` and are refused. The text report still ranks CPU only: it does not count allocations. Extra events add stacks between samples, so a thread with few stack changes but a large weight (often the finalizer under `gc-verbose`) is gap time, not work. Do not enable `System.Threading.Tasks.TplEventSource` for a CPU question: the report then prints a `Warning` because task stacks are stitched across threads.
+
 5. **Compare two captures for a before/after question** — a fix, a regression, a configuration change. Capture both the same way (same workload, duration and build configuration; `trace --launch` makes that easy), then:
 
    ```bash

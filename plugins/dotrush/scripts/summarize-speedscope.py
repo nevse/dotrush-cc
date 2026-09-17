@@ -18,6 +18,12 @@ PROCESS_ROOT = re.compile(r"^Process(?:\d+)?\s")
 # a trimmed name that would collide with another row keeps its signature.
 IL_SIGNATURE = re.compile(r"\(.+\)$", re.DOTALL)
 THREAD_ID = re.compile(r"^Thread \((\d+)\)")
+# Leaves the converter puts under a thread that is not running: native or blocked code, and, when the
+# trace has TPL task events, an await. None of them is CPU.
+WAITING_LEAVES = {"UNMANAGED_CODE_TIME", "BLOCKED_TIME", "AWAIT_TIME"}
+# With TPL task events the converter stitches each task's stack under the stack that started it,
+# joined by these markers, which are no functions either.
+ASYNC_MARKERS = {"STARTING TASK", "UNKNOWN_ASYNC"}
 
 
 # The sample profiler tags each sample as running managed code or not, and the converter turns that
@@ -62,7 +68,12 @@ def display_names(names: list[str]) -> dict[str, str]:
 
 
 def is_structural(name: str) -> bool:
-    return name in STRUCTURAL_NAMES or PROCESS_ROOT.match(name) is not None or name.startswith("Thread (")
+    return (
+        name in STRUCTURAL_NAMES
+        or name in ASYNC_MARKERS
+        or PROCESS_ROOT.match(name) is not None
+        or name.startswith("Thread (")
+    )
 
 
 class Totals:
@@ -107,20 +118,21 @@ def record_stack(stack: list[int], weight: float, names: list[str], totals: Tota
     leaf = stack_names[-1]
     if leaf == "CPU_TIME":
         totals.cpu_tagged += weight
-    if leaf == "UNMANAGED_CODE_TIME":
+    waiting = leaf in WAITING_LEAVES
+    if waiting:
         totals.unmanaged += weight
         exclusive, inclusive = totals.unmanaged_exclusive, totals.unmanaged_inclusive
     else:
         exclusive, inclusive = totals.exclusive, totals.inclusive
 
-    if leaf in ("CPU_TIME", "UNMANAGED_CODE_TIME"):
+    if waiting or leaf == "CPU_TIME":
         stack_names.pop()
 
     meaningful = [name for name in stack_names if not is_structural(name) and not name.endswith("_TIME")]
     if not meaningful:
         return
 
-    if leaf == "UNMANAGED_CODE_TIME":
+    if waiting:
         totals.unmanaged_on_stack += weight
     else:
         totals.managed += weight
@@ -205,6 +217,7 @@ class Capture:
         names = [frame.get("name", "<unnamed>") for frame in document["shared"]["frames"]]
         profiles = document.get("profiles", [])
         self.path = path
+        self.async_stitched = any(name in ASYNC_MARKERS or name == "AWAIT_TIME" for name in names)
         self.threads = [Thread(profile, names) for profile in profiles]
         if not self.threads:
             raise ValueError(f"no profiles found in {path}")
@@ -243,6 +256,13 @@ class Capture:
             totals.inclusive + totals.unmanaged_inclusive,
             totals.managed + totals.unmanaged_on_stack,
         )
+
+
+ASYNC_WARNING = (
+    "The {which} has TPL task events, so the converter stitched each task's stack under the stack that "
+    "started it: a thread's rows include work its tasks ran on other threads, and awaits count as blocked "
+    "time. For CPU rankings, capture without System.Threading.Tasks.TplEventSource."
+)
 
 
 def signed(value: float) -> str:
@@ -308,6 +328,9 @@ def print_diff(baseline: Capture, current: Capture, limit: int) -> None:
             "captures are compared by time on stack, blocked time included (see trace-report). Compare one working "
             "thread from each capture for numbers closer to CPU."
         )
+    stitched = [label for label, capture in (("baseline", baseline), ("current", current)) if capture.async_stitched]
+    if stitched:
+        print("Warning\t" + ASYNC_WARNING.format(which=" and ".join(stitched) + " capture"))
     print(
         f"Measure\tChange is the current share minus the baseline share of each capture's own {total_name}, "
         "in percentage points; weights are in the captures' unit"
@@ -352,6 +375,8 @@ def print_report(capture: Capture, limit: int) -> None:
         measure = "on-stack time (running and blocked)"
     else:
         measure = "managed CPU"
+    if capture.async_stitched:
+        print("Warning\t" + ASYNC_WARNING.format(which="capture"))
     exclusive, inclusive, total = capture.rankings(on_stack)
     if capture.selected is capture.threads:
         print()

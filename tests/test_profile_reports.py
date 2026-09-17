@@ -809,6 +809,38 @@ class TraceDiffTests(unittest.TestCase):
         return subprocess.run(["bash", str(PROFILE_SH), "trace-diff", *map(str, args)],
                               capture_output=True, text=True, env=environment)
 
+    def test_task_events_leave_their_pseudo_frames_out_and_count_awaits_as_blocked(self):
+        # With TPL task events the converter stitches a task's stack under its starter's, joined by
+        # STARTING TASK, and ends an awaiting stack in AWAIT_TIME.
+        stitched = [ROOT_FRAME, "App!Main()", "App!Loop()", "STARTING TASK", "App!Work()"]
+        document = sampled_capture({"Thread (1)": [
+            (stitched + ["CPU_TIME"], 30),
+            (stitched + ["STARTING TASK", "CPU_TIME"], 10),
+            (stitched + ["AWAIT_TIME"], 60),
+            ([ROOT_FRAME, "App!Main()", "UNKNOWN_ASYNC", "App!Late()", "CPU_TIME"], 10),
+        ]})
+        path = self.write("tpl.speedscope.json", document)
+
+        report = subprocess.run([sys.executable, str(SUMMARIZE), str(path)], capture_output=True, text=True)
+
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertIn("ManagedSampledTime\t50.00\nUnmanagedOrBlockedTime\t60.00\n", report.stdout)
+        self.assertIn("Warning\tThe capture has TPL task events", report.stdout)
+        self.assertNotIn("ManagedOnStackTime", report.stdout)
+        self.assertEqual(block(report.stdout, "=== Top 30 functions by exclusive managed CPU").splitlines()[2:], [
+            "80.00%\t40.00\tApp!Work()",
+            "20.00%\t10.00\tApp!Late()",
+        ])
+        self.assertNotIn("STARTING TASK", report.stdout)
+        self.assertNotIn("UNKNOWN_ASYNC", report.stdout)
+
+        plain = sampled_capture({"Thread (1)": [(cpu("App!Work()"), 10)]})
+        result = self.diff(plain, document)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Warning\tThe current capture has TPL task events", result.stdout)
+        self.assertEqual(rows(result.stdout, "=== Top 30 functions by change in exclusive managed CPU")[0],
+                         ["0.00", "20.00", "+20.00", "0.00", "10.00", "App!Late()"])
+
     def test_the_helper_converts_a_nettrace_and_reads_a_speedscope_file(self):
         baseline = self.write("base.speedscope.json", sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 10)]}))
         (self.root / "base.nettrace").write_bytes(CORELIB.replace("10.0.10", "10.0.3").encode("utf-16-le"))
@@ -1005,6 +1037,58 @@ class TraceLaunchTests(unittest.TestCase):
             ("--launch", "--"): "needs a command after --",
             ("--launch", "00:00:05", "a", "b", "--", "./App"): "at most a duration and an output dir",
             ("--launch", "00:30", "--", "./App"): "mm:ss is rejected",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                result = self.trace(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def collect_options(self):
+        collect = self.calls()[-2]  # the last call converts the trace
+        end =collect.index("--show-child-io") if "--show-child-io" in collect else len(collect)
+        return collect[collect.index("--output") + 2:end]
+
+    def test_passes_trace_options_and_always_keeps_the_sampler(self):
+        # The report is built from the thread-time sampler, which dotnet-trace drops once --profile or
+        # --providers is given.
+        cases = {
+            ("--profile", "gc-verbose"): ["--profile", "gc-verbose,dotnet-sampled-thread-time"],
+            ("--profile", "dotnet-sampled-thread-time,database"): ["--profile", "dotnet-sampled-thread-time,database"],
+            ("--providers", "System.Threading.Tasks.TplEventSource:0x1C3:5"): [
+                "--profile", "dotnet-common,dotnet-sampled-thread-time",
+                "--providers", "System.Threading.Tasks.TplEventSource:0x1C3:5",
+            ],
+            ("--buffersize", "512"): ["--buffersize", "512"],
+            (): [],
+        }
+        for options, expected in cases.items():
+            with self.subTest(options=options):
+                launched = self.trace("--launch", "00:00:10", *options, str(self.out), "--", "./App")
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                self.assertEqual(self.collect_options(), expected)
+                self.assertEqual(self.calls()[-2][-3:], ["--show-child-io", "--", "./App"])
+
+                attached = self.trace(*options, "42", "00:00:10", str(self.out))
+                self.assertEqual(attached.returncode, 0, attached.stderr)
+                self.assertEqual(self.calls()[-2][1:4], ["collect", "--process-id", "42"])
+                self.assertEqual(self.collect_options(), expected)
+
+    def test_rejects_malformed_trace_options_before_running_anything(self):
+        cases = {
+            ("42", "--profile"): "--profile needs a value",
+            ("42", "--profile", "--buffersize", "1"): "--profile needs a value",
+            ("42", "--profile", "gc verbose"): "comma-separated profile names",
+            ("42", "--profile", "a", "--profile", "b"): "--profile given twice",
+            ("42", "--providers", "A:1 B:2"): "must not contain whitespace",
+            ("42", "--buffersize", "0"): "size in MB",
+            ("42", "--buffersize", "big"): "size in MB",
+            ("42", "--clrevents", "gc"): "unknown trace option '--clrevents'",
+            ("42", "--launch"): "--launch must come right after trace",
+            ("42", "00:00:05", "out", "extra"): "a pid, a duration and an output dir",
+            ("42", "--", "./App"): "only trace --launch takes a command",
+            ("--launch", "--profile", "--", "./App"): "--profile needs a value",
         }
         for args, message in cases.items():
             with self.subTest(args=args):

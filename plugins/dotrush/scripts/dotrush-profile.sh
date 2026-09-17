@@ -11,8 +11,8 @@ usage() {
 Usage:
   dotrush-profile.sh tools
   dotrush-profile.sh ps [trace|gcdump] [--filter <text>]
-  dotrush-profile.sh trace <pid> [duration] [output-dir]
-  dotrush-profile.sh trace --launch [duration] [output-dir] -- <command> [args...]
+  dotrush-profile.sh trace <pid> [duration] [output-dir] [trace-options]
+  dotrush-profile.sh trace --launch [duration] [output-dir] [trace-options] -- <command> [args...]
   dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
   dotrush-profile.sh trace-diff <baseline-trace> <current-trace> [count] [baseline-thread-id current-thread-id]
   dotrush-profile.sh heap <pid> [output-dir]
@@ -26,6 +26,15 @@ Defaults:
               else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
   count       30
   thread-id   all threads; the id from a report's thread table ranks that thread alone
+
+Trace options (anywhere before --; each at most once):
+  --profile <names>     dotnet-trace profiles, comma-separated: dotnet-common,
+                        dotnet-sampled-thread-time (the default pair), gc-verbose, gc-collect,
+                        database; dotnet-trace list-profiles names them all
+  --providers <spec>    extra EventPipe providers in dotnet-trace's --providers syntax, no spaces
+  --buffersize <MB>     in-memory buffer, 256 by default; raise it when events are dropped
+  The report is built from the thread-time sampler, so dotnet-sampled-thread-time is added to
+  any --profile that lacks it, and --providers alone keeps the default pair.
 
 Comparing:
   trace-diff ranks functions by how much their share of their own capture's managed CPU moved,
@@ -239,6 +248,72 @@ require_launch_command() {
   fail "cannot launch 'dotnet ${first}': the processes it starts would hang on the suspended diagnostic port; launch the app itself (dotnet <app.dll>, or its executable), or a test project that builds to an executable (Microsoft.Testing.Platform) with its filter"
 }
 
+SAMPLER_PROFILE="dotnet-sampled-thread-time"
+
+# Splits `trace` arguments into trace_positional, the command after `--` (trace_command, with
+# trace_command_given set when `--` was present) and collect_options for dotnet-trace. Options may
+# sit anywhere before `--`. dotnet-trace drops its default profiles as soon as --profile or
+# --providers is given, and the report is built from the thread-time sampler alone (without it the
+# converter turns other events' stacks into untagged "CPU"), so the sampler is always kept; with only
+# --providers the default profiles stay too. dotnet-trace itself rejects an unknown profile name, or
+# one that is only for collect-linux, before it attaches or launches anything.
+parse_trace_options() {
+  local profile="" providers="" buffersize=""
+  trace_positional=()
+  trace_command=()
+  trace_command_given=""
+  collect_options=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --)
+        trace_command_given=1
+        shift
+        trace_command=("$@")
+        break
+        ;;
+      --profile|--providers|--buffersize)
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || fail "$1 needs a value"
+        case "$1" in
+          --profile)
+            [[ -z "$profile" ]] || fail "--profile given twice; list the profiles comma-separated"
+            [[ "$2" =~ ^[A-Za-z0-9-]+(,[A-Za-z0-9-]+)*$ ]] || fail "--profile takes comma-separated profile names, got '$2'"
+            profile="$2"
+            ;;
+          --providers)
+            [[ -z "$providers" ]] || fail "--providers given twice; list the providers comma-separated"
+            [[ "$2" != *[[:space:]]* ]] || fail "--providers must not contain whitespace, got '$2'"
+            providers="$2"
+            ;;
+          --buffersize)
+            [[ -z "$buffersize" ]] || fail "--buffersize given twice"
+            [[ "$2" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--buffersize takes a size in MB, got '$2'"
+            buffersize="$2"
+            ;;
+        esac
+        shift 2
+        ;;
+      --launch)
+        fail "--launch must come right after trace"
+        ;;
+      -*)
+        fail "unknown trace option '$1'; expected --profile, --providers or --buffersize"
+        ;;
+      *)
+        trace_positional+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [[ -n "$profile$providers" ]]; then
+    profile="${profile:-dotnet-common,$SAMPLER_PROFILE}"
+    [[ ",$profile," == *",$SAMPLER_PROFILE,"* ]] || profile="$profile,$SAMPLER_PROFILE"
+    collect_options+=(--profile "$profile")
+  fi
+  [[ -z "$providers" ]] || collect_options+=(--providers "$providers")
+  [[ -z "$buffersize" ]] || collect_options+=(--buffersize "$buffersize")
+  return 0
+}
+
 # Converts a captured trace and writes its report next to it, printing each path as it appears.
 finish_trace() {
   local trace_file="$1" speedscope_file report_file
@@ -321,27 +396,28 @@ case "$command_name" in
     ;;
 
   trace)
+    shift
     launch=""
-    if [[ "${2:-}" == --launch ]]; then
+    if [[ "${1:-}" == --launch ]]; then
       launch=1
-      shift 2
-      positional=()
-      while [[ $# -gt 0 && "$1" != -- ]]; do
-        positional+=("$1")
-        shift
-      done
-      [[ $# -gt 0 ]] || fail "trace --launch needs -- before the command to launch"
       shift
-      [[ $# -gt 0 ]] || fail "trace --launch needs a command after --"
-      (( ${#positional[@]} <= 2 )) || fail "trace --launch takes at most a duration and an output dir before --, got: ${positional[*]}"
+    fi
+    parse_trace_options "$@"
+    if [[ -n "$launch" ]]; then
+      [[ -n "$trace_command_given" ]] || fail "trace --launch needs -- before the command to launch"
+      (( ${#trace_command[@]} > 0 )) || fail "trace --launch needs a command after --"
+      (( ${#trace_positional[@]} <= 2 )) || fail "trace --launch takes at most a duration and an output dir before --, got: ${trace_positional[*]}"
+      set -- "${trace_command[@]}"
       require_launch_command "$@"
-      duration="${positional[0]:-00:00:30}"
-      requested_dir="${positional[1]:-}"
+      duration="${trace_positional[0]:-00:00:30}"
+      requested_dir="${trace_positional[1]:-}"
       label="launch"
     else
-      pid="${2:-}"
-      duration="${3:-00:00:30}"
-      requested_dir="${4:-}"
+      [[ -z "$trace_command_given" ]] || fail "only trace --launch takes a command after --"
+      (( ${#trace_positional[@]} <= 3 )) || fail "trace takes a pid, a duration and an output dir, got: ${trace_positional[*]}"
+      pid="${trace_positional[0]:-}"
+      duration="${trace_positional[1]:-00:00:30}"
+      requested_dir="${trace_positional[2]:-}"
       require_pid "$pid"
       label="$pid"
     fi
@@ -362,13 +438,14 @@ case "$command_name" in
       # dotnet-trace exits with the child's code, so a failing command still leaves a trace; the
       # file, not the code, says whether the capture worked.
       status=0
-      run_tool dotnet-trace collect --duration "$duration" --output "$trace_file" --show-child-io \
-        -- "$@" </dev/null >&2 || status=$?
+      run_tool dotnet-trace collect --duration "$duration" --output "$trace_file" ${collect_options[@]+"${collect_options[@]}"} \
+        --show-child-io -- "$@" </dev/null >&2 || status=$?
       [[ -f "$trace_file" ]] || fail "dotnet-trace wrote no $trace_file (exit $status)"
       echo "TRACE=$trace_file"
       echo "EXIT=$status"
     else
-      run_tool dotnet-trace collect --process-id "$pid" --duration "$duration" --output "$trace_file" >&2
+      run_tool dotnet-trace collect --process-id "$pid" --duration "$duration" --output "$trace_file" \
+        ${collect_options[@]+"${collect_options[@]}"} >&2
       echo "TRACE=$trace_file"
     fi
     finish_trace "$trace_file"

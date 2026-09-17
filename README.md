@@ -111,6 +111,7 @@ P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   #
 "$P/scripts/dotrush-profile.sh" ps trace --filter testhost  # attachable .NET processes, with command lines
 "$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 # always hh:mm:ss — 00:30 would mean 30 minutes
 "$P/scripts/dotrush-profile.sh" trace --launch 00:02:00 -- dotnet bin/Release/net10.0/Bench.dll  # trace from startup
+"$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 --profile gc-verbose   # add GC and allocation events to the capture
 "$P/scripts/dotrush-profile.sh" trace-diff before.nettrace after.nettrace 30  # which functions gained or lost CPU share
 "$P/scripts/dotrush-profile.sh" heap 12345           # snapshot + per-type/retention report
 "$P/scripts/dotrush-profile.sh" heap-diff base.gcdump current.gcdump 30
