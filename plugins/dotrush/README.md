@@ -285,7 +285,7 @@ and its presence marks a proxy that has the channel; it also removes `edits/`, t
 the FIFO, waits for the response file (default 60 s), prints the `result` as JSON on stdout and deletes the file.
 A JSON-RPC error prints `code: message` and exits 1. On timeout it injects `$/cancelRequest` for the id, deletes a
 response that arrives within a second, and exits 3. Response files older than 10 minutes are removed when a
-`request` or `rename` starts. Before sending, it requires a running proxy, `responses/`, and `load-completed`, and
+`request` or `rename preview` starts. Before sending, it requires a running proxy, `responses/`, and `load-completed`, and
 names the next step when one is missing (run a C# LSP operation, restart Claude Code, or pick a project). A write
 that fails with a broken pipe (the proxy's read end is gone) is retried once, with the whole batch through a new
 open; `rename apply` sends all its `didOpen` notifications as one such batch. The CLI has no delivery receipt for a

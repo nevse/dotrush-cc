@@ -1441,6 +1441,27 @@ class InjectorTests(unittest.TestCase):
 
         self.assertEqual(out, ["50", "True"])
 
+    def test_a_deeply_nested_line_is_skipped_and_later_lines_still_go_through(self):
+        # Python 3.9's json.loads raises RecursionError on deep nesting (3.14 parses it), so fake that here.
+        out = self.run_proxy_script(
+            "import io\n"
+            "real_loads = proxy.json.loads\n"
+            "def loads(s):\n"
+            "    if s.startswith('[['): raise RecursionError('maximum recursion depth exceeded')\n"
+            "    return real_loads(s)\n"
+            "proxy.json.loads = loads\n"
+            "class Sink:\n"
+            "    def __init__(self): self.data = bytearray()\n"
+            "    def write(self, b): self.data += b\n"
+            "    def flush(self): pass\n"
+            "sink = Sink()\n"
+            "lines = '[[1]]\\n' + '{\"method\":\"after\"}\\n'\n"
+            "print(proxy.inject_lines(io.StringIO(lines), sink))\n"
+            "print(b'\"after\"' in sink.data)\n"
+        )
+
+        self.assertEqual(out, ["True", "True"])
+
 
 if __name__ == "__main__":
     unittest.main()

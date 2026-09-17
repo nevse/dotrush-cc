@@ -316,12 +316,15 @@ def open_fifo_for_reading(path):
     Returns (text reader, write fd); the caller closes both.
     """
     read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    write_fd = None
     try:
         write_fd = os.open(path, os.O_WRONLY)
         os.set_blocking(read_fd, True)
         return os.fdopen(read_fd, "r", encoding="utf-8", errors="replace"), write_fd
     except BaseException:
         os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
         raise
 
 
@@ -357,7 +360,9 @@ def inject_lines(fifo, child_stdin):
             continue
         try:
             msg = json.loads(line)
-        except json.JSONDecodeError as e:
+        except (ValueError, RecursionError) as e:
+            # ValueError covers JSONDecodeError; a deeply nested line raises RecursionError, which would otherwise
+            # end the injector thread and silently drop every later injection.
             log(f"INJECT skipped (bad JSON): {e}: {line[:120]}")
             continue
         if not isinstance(msg, dict) or "method" not in msg:

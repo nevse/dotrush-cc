@@ -34,18 +34,24 @@ LSP restarts, so within a session it's asked only once.
 3. **Discover candidates** with Glob, relative to the user's working directory, solutions first:
    `**/*.slnx`, then `**/*.sln`, then `**/*.csproj`. Dedupe, keep absolute paths, cap ~10.
 
-4. **Ask the user (required)** — call **AskUserQuestion**: "Which project/solution should DotRush load for
-   C# in this workspace?" Options = the discovered candidates (basename + parent folder). The user can pick
-   "Other" to type an absolute path. Never guess — always ask (unless step 2 applied).
+4. **Choose the target.** If a project or user instruction (a `CLAUDE.md` mapping work areas to solutions, or
+   the user naming one) already determines it, use that and tell the user which rule chose it. Otherwise call
+   **AskUserQuestion**: "Which project/solution should DotRush load for C# in this workspace?" Options = the
+   discovered candidates (basename + parent folder). The user can pick "Other" to type an absolute path. Never
+   guess between candidates.
 
-5. **Persist the choice** to `"$WSDIR/target.json"`, using the chosen absolute path:
+   Also decide `<RESTORE>` for steps 5-6: `true` by default; `false` when the projects are already restored
+   (a built checkout) or a NuGet feed is unreachable (restores fail slowly with `NU1900` and similar), or when
+   an instruction says so.
+
+5. **Persist the choice** to `"$WSDIR/target.json"`, using the chosen absolute path and `<RESTORE>`:
    ```bash
-   printf '%s\n' '{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":true}' > "$WSDIR/target.json"
+   printf '%s\n' '{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":<RESTORE>}' > "$WSDIR/target.json"
    ```
 
 6. **Apply it live now** (no restart) via this workspace's FIFO. Always send the configuration:
    ```bash
-   printf '%s\n' '{"method":"workspace/didChangeConfiguration","params":{"settings":{"dotrush":{"roslyn":{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":true}}}}}' > "$FIFO"
+   printf '%s\n' '{"method":"workspace/didChangeConfiguration","params":{"settings":{"dotrush":{"roslyn":{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":<RESTORE>}}}}}' > "$FIFO"
    ```
    Then send a reload **only if `"$WSDIR/load-completed"` exists**:
    ```bash
