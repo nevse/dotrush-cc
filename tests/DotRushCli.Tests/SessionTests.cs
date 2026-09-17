@@ -34,6 +34,7 @@ public sealed class SessionTests : IDisposable
         string? Workspace = null,
         string? SessionId = null,
         int? Pid = null,
+        string? ClaudePid = null,
         bool Responses = true,
         bool LoadCompleted = true,
         string? Target = null,
@@ -45,6 +46,7 @@ public sealed class SessionTests : IDisposable
         if (spec.Workspace is not null) File.WriteAllText(Path.Combine(dir, "workspace.txt"), spec.Workspace + "\n");
         if (spec.SessionId is not null) File.WriteAllText(Path.Combine(dir, "session.txt"), spec.SessionId + "\n");
         if (spec.Pid is not null) File.WriteAllText(Path.Combine(dir, "pid"), spec.Pid + "\n");
+        if (spec.ClaudePid is not null) File.WriteAllText(Path.Combine(dir, "claude-pid"), spec.ClaudePid + "\n");
         if (spec.Responses) Directory.CreateDirectory(Path.Combine(dir, "responses"));
         if (spec.LoadCompleted) File.WriteAllText(Path.Combine(dir, "load-completed"), "");
         if (spec.Target is not null) File.WriteAllText(Path.Combine(dir, "target.json"), spec.Target);
@@ -86,6 +88,50 @@ public sealed class SessionTests : IDisposable
         var env = Env();
         env["DOTRUSH_SESSION_ID"] = "";
         env["AGTERM_SESSION_ID"] = "session-a";
+
+        Assert.Equal((0, a + "\n", ""), Run(env, null, "session", "--dir"));
+    }
+
+    [Fact]
+    public void Claude_processes_sharing_an_agterm_session_id_each_get_their_own_dir()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "tab", Pid: LivePid, ClaudePid: "100"));
+        var b = MakeDir("sess-bbbbbbbbbbbb", new(Workspace: project, SessionId: "tab", Pid: LivePid, ClaudePid: "200"));
+        var env = Env();
+        env["AGTERM_SESSION_ID"] = "tab";
+        env["CLAUDE_PID"] = "200";
+
+        Assert.Equal((0, b + "\n", ""), Run(env, null, "session", "--dir"));
+    }
+
+    [Fact]
+    public void Another_claude_processs_dir_in_the_same_agterm_tab_is_never_picked()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "tab", Pid: LivePid, ClaudePid: "100"));
+        var env = Env();
+        env["AGTERM_SESSION_ID"] = "tab";
+        env["CLAUDE_PID"] = "200";
+
+        Assert.Equal((1, "", NoSessionMessage), Run(env, null, "session", "--dir"));
+    }
+
+    [Fact]
+    public void An_agterm_dir_without_a_claude_pid_still_matches()
+    {
+        var a = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "tab", Pid: LivePid));
+        var env = Env();
+        env["AGTERM_SESSION_ID"] = "tab";
+        env["CLAUDE_PID"] = "200";
+
+        Assert.Equal((0, a + "\n", ""), Run(env, null, "session", "--dir"));
+    }
+
+    [Fact]
+    public void An_explicit_session_id_ignores_the_claude_pid()
+    {
+        var a = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid));
+        var env = Env(sessionId: "session-a");
+        env["CLAUDE_PID"] = "200";
 
         Assert.Equal((0, a + "\n", ""), Run(env, null, "session", "--dir"));
     }

@@ -28,7 +28,7 @@ Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_REF             DotRush ref to require (default: "ref" in dotrush-version.json)
     DOTRUSH_INJECT_FIFO     control FIFO path
     DOTRUSH_PROXY_LOG       log file path (empty string disables logging)
-    DOTRUSH_SESSION_ID      explicit per-session key (overrides AGTERM_SESSION_ID discovery)
+    DOTRUSH_SESSION_ID      explicit per-session key (overrides AGTERM_SESSION_ID + parent pid discovery)
 """
 import hashlib
 import json
@@ -51,16 +51,22 @@ REF_MARKER = os.path.join(SERVER_DIR, ".dotrush-ref")
 # Runtime files are scoped PER CLAUDE SESSION so concurrent sessions never share one
 # FIFO / target / log. Parallel sessions launched from the SAME folder (e.g. one per git
 # worktree) share CLAUDE_PROJECT_DIR *and* cwd, so keying on the workspace path collides and
-# their loaded projects get meshed. AGTERM_SESSION_ID is unique per Claude session, so key on
-# it when present; fall back to the workspace-path hash (headless/CI/other terminals with no
-# session id — the old per-workspace behavior, incl. project choice persisting across restarts).
+# their loaded projects get meshed. AGTERM_SESSION_ID names the agterm tab, and every Claude
+# process started from that tab inherits it, background jobs included, so an agterm key also
+# carries the launching Claude process (our parent; the CLI sees the same pid as CLAUDE_PID).
+# DOTRUSH_SESSION_ID is an explicit key and is used as given. Without either, fall back to the
+# workspace-path hash (headless/CI/other terminals with no session id — the old per-workspace
+# behavior, incl. project choice persisting across restarts).
 # The DotRush server binary (SERVER_DIR) stays shared.
 DATA_DIR = os.environ.get("DOTRUSH_DATA_DIR") or os.path.normpath(os.path.join(SERVER_DIR, ".."))
 WS_ROOT = os.path.join(DATA_DIR, "ws")
 WORKSPACE = os.path.abspath(os.environ.get("DOTRUSH_WORKSPACE") or os.getcwd())
 SESSION_ID = os.environ.get("DOTRUSH_SESSION_ID") or os.environ.get("AGTERM_SESSION_ID") or ""
+# Set only for an agterm key: the Claude process this proxy belongs to, recorded in claude-pid.
+CLAUDE_PID = "" if os.environ.get("DOTRUSH_SESSION_ID") or not SESSION_ID else str(os.getppid())
 if SESSION_ID:
-    WS_KEY = "sess-" + hashlib.sha1(SESSION_ID.encode("utf-8")).hexdigest()[:12]
+    key = f"{SESSION_ID}:{CLAUDE_PID}" if CLAUDE_PID else SESSION_ID
+    WS_KEY = "sess-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 else:  # no session id: keep the legacy workspace-hash key so persisted choices survive upgrade
     WS_KEY = hashlib.sha1(WORKSPACE.encode("utf-8")).hexdigest()[:12]
 WS_DIR = os.path.join(WS_ROOT, WS_KEY)
@@ -502,6 +508,9 @@ def ensure_workspace_dir():
         if SESSION_ID:
             with open(os.path.join(WS_DIR, "session.txt"), "w") as f:
                 f.write(SESSION_ID + "\n")
+        if CLAUDE_PID:
+            with open(os.path.join(WS_DIR, "claude-pid"), "w") as f:
+                f.write(CLAUDE_PID + "\n")
     except OSError as e:
         log(f"cannot init workspace dir {WS_DIR}: {e}")
     try:

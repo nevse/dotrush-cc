@@ -1,5 +1,12 @@
 # Changelog
 
+### 0.7.5
+- Claude Code processes started from one agterm tab (background jobs included) no longer share a runtime dir.
+  They all inherit the tab's `AGTERM_SESSION_ID`, so their language servers overwrote each other's `pid`,
+  request responses and saved rename plans, and read one injection FIFO: a request could be answered by
+  another job's server. The dir is now keyed on the session id and the launching Claude Code process, and the
+  tools look it up by `CLAUDE_PID`. `DOTRUSH_SESSION_ID` is still used as given.
+
 ### 0.7.3
 - `dotrush-profile.sh trace-diff <baseline> <current> [count] [baseline-thread current-thread]` compares two CPU
   captures: functions ranked by how much their share of each capture's own managed CPU moved, in percentage

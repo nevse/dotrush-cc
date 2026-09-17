@@ -1541,6 +1541,39 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(os.listdir(ws / "responses"), [])
         self.assertFalse((ws / "edits").exists())
 
+    def test_an_agterm_session_dir_is_keyed_on_the_launching_claude_process(self):
+        # Every Claude process started from one agterm tab (background jobs too) inherits its
+        # AGTERM_SESSION_ID, so the parent pid keeps their proxies apart.
+        import hashlib
+
+        script = PROXY_IMPORT + "proxy.ensure_workspace_dir()\nprint(proxy.WS_DIR)\n"
+        env = {k: v for k, v in os.environ.items() if k != "DOTRUSH_SESSION_ID"}
+        env.update({"DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "AGTERM_SESSION_ID": "tab"})
+        # The shell is the proxy's parent; the trailing command stops it from exec-ing the proxy in its place.
+        runs = [subprocess.run(["/bin/sh", "-c", 'echo $$; "$0" -c "$1"; exit $?', sys.executable, script],
+                               env=env, capture_output=True, text=True, check=True).stdout.split()
+                for _ in range(2)]
+
+        dirs = []
+        for parent, ws in runs:
+            key = hashlib.sha1(f"tab:{parent}".encode()).hexdigest()[:12]
+            self.assertEqual(ws, str(self.root / "ws" / f"sess-{key}"))
+            self.assertEqual(Path(ws, "session.txt").read_text(), "tab\n")
+            self.assertEqual(Path(ws, "claude-pid").read_text(), parent + "\n")
+            dirs.append(ws)
+        self.assertNotEqual(dirs[0], dirs[1])
+
+    def test_an_explicit_session_id_is_used_without_the_parent_pid(self):
+        import hashlib
+
+        script = PROXY_IMPORT + "proxy.ensure_workspace_dir()\nprint(proxy.WS_DIR)\n"
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root),
+               "DOTRUSH_SESSION_ID": "explicit", "AGTERM_SESSION_ID": "tab"}
+        ws = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+        self.assertEqual(ws, str(self.root / "ws" / ("sess-" + hashlib.sha1(b"explicit").hexdigest()[:12])))
+        self.assertFalse(Path(ws, "claude-pid").exists())
+
     def test_summary_lists_errors_first_with_one_based_positions_relative_to_the_root(self):
         store = self.root / "diagnostics.json"
         self.write_store(store, {
