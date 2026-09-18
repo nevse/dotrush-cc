@@ -1007,6 +1007,22 @@ class FocusTests(unittest.TestCase):
                     self.assertIn(f"Focus\t{GET_REFERENCE}\n", self.focus(sheet_capture(), "--focus", needle))
                 else:
                     self.assertIn(f"Focus\t{expected}\n", self.focus(overloads, "--focus", needle))
+        # Overloads on one type: a trimmed row name names both, a whole signature names one.
+        same_type = sampled_capture({"Thread (1)": [
+            (cpu(MAIN, "App!Program.Run()"), 60),
+            (cpu(MAIN, "App!Program.Run(int32)"), 40),
+        ]})
+        for needle in ("App!Program.Run()", "App!Program.Run(int32)"):
+            with self.subTest(needle=needle):
+                self.assertIn(f"Focus\t{needle}\n", self.focus(same_type, "--focus", needle))
+        for needle in ("App!Program.Run(...)", "Program.Run(...)", "Program.Run"):
+            with self.subTest(needle=needle):
+                trimmed = self.report(same_type, "--focus", needle)
+                self.assertEqual(trimmed.returncode, 1)
+                self.assertIn("matches 2 functions", trimmed.stderr)
+                self.assertIn("60.00\tApp!Program.Run()\n", trimmed.stderr)
+                self.assertIn("40.00\tApp!Program.Run(int32)\n", trimmed.stderr)
+
         both = self.report(overloads, "--focus", "Run")
         self.assertEqual(both.returncode, 1)
         self.assertIn("'Run' matches 2 functions", both.stderr)

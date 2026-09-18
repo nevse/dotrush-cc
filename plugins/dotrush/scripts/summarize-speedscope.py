@@ -373,7 +373,7 @@ FOCUS_MIN_SHARE = 0.01
 
 def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
     """The one sampled function `needle` names. Tried in order, and the first that matches anything decides: the
-    full name as a row prints it; the name without its parameter list; the end of that name after a `.`, `!` or
+    full name with its whole signature; the name without its parameter list; the end of that name after a `.`, `!` or
     `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case. Past the first, a parameter list on
     `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike."""
     names = [name for name, value in inclusive.items() if value > 0]
@@ -381,7 +381,7 @@ def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
     folded = stripped.casefold()
     ending = re.compile(f"(^|[.!:]){re.escape(folded)}$")
     tiers = (
-        lambda name: name == needle or shorten(name) == needle,
+        lambda name: name == needle,
         lambda name: bare(name) == stripped,
         lambda name: ending.search(bare(name).casefold()) is not None,
         lambda name: folded in bare(name).casefold(),
@@ -391,8 +391,8 @@ def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
         if len(matches) == 1:
             return matches[0]
         if matches:
-            shown = display_names(matches[:10])
-            listed = "\n".join(f"  {inclusive[name]:.2f}\t{shown[name]}" for name in matches[:10])
+            # Full names, untrimmed: passed back, each one resolves in the first tier.
+            listed = "\n".join(f"  {inclusive[name]:.2f}\t{name}" for name in matches[:10])
             more = f"\n  ... and {len(matches) - 10} more" if len(matches) > 10 else ""
             raise ValueError(
                 f"--focus {needle!r} matches {len(matches)} functions; pass more of the name, or a name exactly "
