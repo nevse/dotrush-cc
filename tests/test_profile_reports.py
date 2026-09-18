@@ -960,6 +960,18 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(rows(result, "=== Callers of the focus function"),
                          [["100.00%", "100.00%", "10.00", "App!Program.Main()"]])
 
+    def test_a_caller_that_is_sometimes_outermost_keeps_that_share_in_its_own_row(self):
+        result = self.focus(sampled_capture({"Thread (1)": [
+            (cpu("App!A()", "App!Focus()"), 5),
+            (cpu("App!Root()", "App!A()", "App!Focus()"), 5),
+        ]}), "--focus", "Focus")
+
+        self.assertEqual(rows(result, "=== Callers of the focus function"), [
+            ["100.00%", "100.00%", "10.00", "App!A()"],
+            ["50.00%", "50.00%", "5.00", "  (no caller: outermost managed frame)"],
+            ["50.00%", "50.00%", "5.00", "  App!Root()"],
+        ])
+
     def test_the_name_is_matched_whole_first_and_an_ambiguous_one_is_refused_with_candidates(self):
         for needle in (GET_REFERENCE, "App!Sheet.GetReference(...)", "App!Sheet.GetReference", "sheet.getreference"):
             with self.subTest(needle=needle):
@@ -973,6 +985,32 @@ class FocusTests(unittest.TestCase):
         self.assertIn(f"50.00\t{WRITE}", ambiguous.stderr)
         self.assertIn(f"30.00\t{IDENT}", ambiguous.stderr)
         self.assertNotIn("Traceback", ambiguous.stderr)
+
+        # Parameterless frames match by their trailing name too, and an overload is not preferred for having
+        # parameters: `Run` names both overloads below and is refused, while `RunAll` never matches it.
+        overloads = sampled_capture({"Thread (1)": [
+            (cpu(MAIN, "App!Program.Run()"), 90),
+            (cpu(MAIN, "App!Worker.Run(int32)"), 5),
+            (cpu(MAIN, "App!Program.RunAll()"), 5),
+        ]})
+        for needle, expected in (
+            ("Program.Run", "App!Program.Run()"),
+            ("app!program.run", "App!Program.Run()"),
+            ("App!Program.Run", "App!Program.Run()"),
+            ("Program.Run(...)", "App!Program.Run()"),
+            ("Worker.Run", "App!Worker.Run(int32)"),
+            ("RunAll", "App!Program.RunAll()"),
+            ("Sheet.GetReference(...)", None),
+        ):
+            with self.subTest(needle=needle):
+                if expected is None:
+                    self.assertIn(f"Focus\t{GET_REFERENCE}\n", self.focus(sheet_capture(), "--focus", needle))
+                else:
+                    self.assertIn(f"Focus\t{expected}\n", self.focus(overloads, "--focus", needle))
+        both = self.report(overloads, "--focus", "Run")
+        self.assertEqual(both.returncode, 1)
+        self.assertIn("'Run' matches 2 functions", both.stderr)
+        self.assertNotIn("RunAll", both.stderr)
 
         missing = self.report(sheet_capture(), "--focus", "Nowhere")
         self.assertEqual(missing.returncode, 1)

@@ -359,6 +359,14 @@ def print_diff(baseline: Capture, current: Capture, limit: int) -> None:
     )
 
 
+PARAMETER_LIST = re.compile(r"\(.*\)$", re.DOTALL)
+
+
+def bare(name: str) -> str:
+    """A frame name without its parameter list, an empty `()` included, unlike `shorten`."""
+    return PARAMETER_LIST.sub("", name)
+
+
 # A --focus branch under this share of the focus function's own time is folded into one row.
 FOCUS_MIN_SHARE = 0.01
 
@@ -366,17 +374,15 @@ FOCUS_MIN_SHARE = 0.01
 def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
     """The one sampled function `needle` names. Tried in order, and the first that matches anything decides: the
     full name as a row prints it; the name without its parameter list; the end of that name after a `.`, `!` or
-    `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case."""
+    `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case. Past the first, a parameter list on
+    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike."""
     names = [name for name, value in inclusive.items() if value > 0]
-    folded = needle.casefold()
+    stripped = bare(needle)
+    folded = stripped.casefold()
     ending = re.compile(f"(^|[.!:]){re.escape(folded)}$")
-
-    def bare(name: str) -> str:
-        return IL_SIGNATURE.sub("", name)
-
     tiers = (
         lambda name: name == needle or shorten(name) == needle,
-        lambda name: bare(name) == needle,
+        lambda name: bare(name) == stripped,
         lambda name: ending.search(bare(name).casefold()) is not None,
         lambda name: folded in bare(name).casefold(),
     )
@@ -422,10 +428,10 @@ def focus_trees(stacks: collections.Counter[tuple[str, ...]], focus: str) -> tup
 
 class Tree:
     """How one focus tree is printed. `rest` names the part of a node's time that none of its children has, for
-    the focus function and, with `rest_below`, for every function under it that has children."""
+    the focus function and for every function in the tree that has children, so each level adds up."""
 
-    def __init__(self, rest: str, rest_below: bool, max_depth: int, limit: int, floor: float) -> None:
-        self.rest, self.rest_below = rest, rest_below
+    def __init__(self, rest: str, max_depth: int, limit: int, floor: float) -> None:
+        self.rest = rest
         self.max_depth, self.limit, self.floor = max_depth, limit, floor
         # (depth, label, weight, whether the label is a function name)
         self.rows: list[tuple[int, str, float, bool]] = []
@@ -435,7 +441,7 @@ class Tree:
         entries = [(name, child.weight, child) for name, child in node.children.items()]
         remainder = node.weight - sum(child.weight for child in node.children.values())
         # A leaf below the focus function is all rest, which its own row already says.
-        if remainder > 1e-9 and (depth == 0 or (self.rest_below and node.children)):
+        if remainder > 1e-9 and (depth == 0 or node.children):
             entries.append((self.rest, remainder, None))
         entries.sort(key=lambda entry: (-entry[1], entry[0]))
         shown = [entry for entry in entries[:self.limit] if entry[1] >= self.floor]
@@ -479,12 +485,12 @@ def print_focus(capture: Capture, on_stack: bool, measure: str, needle: str, dep
     print()
     print_tree(
         f"=== Callers of the focus function, {depth} levels up, by inclusive {measure} ===",
-        callers, Tree("(no caller: outermost managed frame)", False, depth, limit, floor), total,
+        callers, Tree("(no caller: outermost managed frame)", depth, limit, floor), total,
     )
     print()
     print_tree(
         f"=== Callees of the focus function, {depth} levels down, by inclusive {measure} ===",
-        callees, Tree("(self)", True, depth, limit, floor), total,
+        callees, Tree("(self)", depth, limit, floor), total,
     )
 
 
