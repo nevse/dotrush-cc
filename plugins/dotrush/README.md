@@ -131,7 +131,8 @@ The plugin mirrors DotRush's profiling split with two Claude skills:
 - Ask Claude to **profile CPU**, find a hot path, investigate high CPU/latency, or invoke
   `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval, or launches a short-lived program
   or an executable test project under it (`trace --launch … -- <command>`), and creates a `.nettrace`, a
-  `.speedscope.json`, and a text top-method report. For a before/after change, `trace-diff` ranks functions by
+  `.speedscope.json`, and a text top-method report. `trace-report --focus <function>` shows one function's
+  callers and callees as trees with their share of the time. For a before/after change, `trace-diff` ranks functions by
   how much their share of each capture's managed CPU moved. `--profile`, `--providers` and `--buffersize` add
   events to a capture (for example `gc-verbose`) while the thread-time sampler behind the report stays on. `ps` lists attachable processes with their elapsed
   time, main assembly and command line, and `--filter` narrows the list.

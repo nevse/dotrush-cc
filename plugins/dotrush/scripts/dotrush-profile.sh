@@ -14,6 +14,7 @@ Usage:
   dotrush-profile.sh trace <pid> [duration] [output-dir] [trace-options]
   dotrush-profile.sh trace --launch [duration] [output-dir] [trace-options] -- <command> [args...]
   dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
+                     [--focus <function> [--depth <levels>]]
   dotrush-profile.sh trace-diff <baseline-trace> <current-trace> [count] [baseline-thread-id current-thread-id]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
@@ -35,6 +36,13 @@ Trace options (anywhere before --; each at most once):
   --buffersize <MB>     in-memory buffer, 256 by default; raise it when events are dropped
   The report is built from the thread-time sampler, so dotnet-sampled-thread-time is added to
   any --profile that lacks it, and --providers alone keeps the default pair.
+
+Call trees:
+  trace-report --focus <function> replaces the rankings with two trees for that one function:
+  its callers, and what it calls with its own time as (self). <function> is a name as a row
+  prints it, or its end (Method, Type.Method), or any part of it; a name matching several
+  functions is refused with the candidates. --depth caps each tree, 8 levels by default; count
+  caps the rows per level, and rows under 1% of the function's time are folded.
 
 Comparing:
   trace-diff ranks functions by how much their share of their own capture's managed CPU moved,
@@ -231,10 +239,12 @@ nettrace_for() {
 # The .nettrace, when there is one, names the target's runtime, which the report needs to explain a
 # capture whose samples all read as unmanaged.
 write_trace_report() {
-  local speedscope_file="$1" count="$2" trace_file="${3:-}" thread="${4:-}"
+  local speedscope_file="$1" count="$2" trace_file="${3:-}" thread="${4:-}" focus="${5:-}" depth="${6:-}"
   local args=("$speedscope_file" --limit "$count")
   [[ -n "$trace_file" && -f "$trace_file" ]] && args+=(--nettrace "$trace_file")
   [[ -n "$thread" ]] && args+=(--thread "$thread")
+  [[ -n "$focus" ]] && args+=(--focus "$focus")
+  [[ -n "$depth" ]] && args+=(--depth "$depth")
   python3 "$SCRIPT_DIR/summarize-speedscope.py" "${args[@]}"
 }
 
@@ -452,14 +462,38 @@ case "$command_name" in
     ;;
 
   trace-report)
-    trace_file="${2:-}"
-    count="${3:-30}"
-    thread="${4:-}"
+    shift
+    positional=()
+    focus=""
+    depth=""
+    while (( $# > 0 )); do
+      case "$1" in
+        --focus|--depth)
+          [[ $# -ge 2 && -n "$2" ]] || fail "$1 needs a value"
+          if [[ "$1" == --focus ]]; then
+            [[ -z "$focus" ]] || fail "--focus is given twice"
+            focus="$2"
+          else
+            [[ -z "$depth" ]] || fail "--depth is given twice"
+            depth="$2"
+          fi
+          shift 2
+          ;;
+        --*) fail "unknown trace-report option: $1 (expected --focus or --depth)" ;;
+        *) positional+=("$1"); shift ;;
+      esac
+    done
+    (( ${#positional[@]} <= 3 )) || fail "trace-report takes a trace, a count and a thread id, then its options"
+    trace_file="${positional[0]-}"
+    count="${positional[1]-30}"
+    thread="${positional[2]-}"
     [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
     require_count "$count"
     [[ -z "$thread" || "$thread" =~ ^[0-9]+$ ]] || fail "expected a numeric thread id, got '$thread'"
+    [[ -z "$depth" || -n "$focus" ]] || fail "--depth needs --focus"
+    [[ -z "$depth" || "$depth" =~ ^[1-9][0-9]*$ ]] || fail "expected a positive --depth, got '$depth'"
     speedscope_file="$(ensure_speedscope "$trace_file")" || exit 1
-    write_trace_report "$speedscope_file" "$count" "$(nettrace_for "$trace_file")" "$thread"
+    write_trace_report "$speedscope_file" "$count" "$(nettrace_for "$trace_file")" "$thread" "$focus" "$depth"
     ;;
 
   trace-diff)

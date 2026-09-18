@@ -874,6 +874,220 @@ class TraceDiffTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
 
 
+MAIN, TO_VALUE, OTHER = "App!Program.Main()", "App!Sheet.ToValue()", "App!Program.Other()"
+GET_REFERENCE, WRITE, IDENT = "App!Sheet.GetReference(int32)", "App!Sheet.WriteSheetName()", "App!Sheet.IsSheetNameIdent()"
+
+
+def sheet_capture():
+    """GetReference runs 91 of 100 ms: 81 under ToValue and 10 under Other; 50 of it in WriteSheetName, which
+    spends 30 in IsSheetNameIdent."""
+    return sampled_capture({"Thread (1)": [
+        (cpu(MAIN, TO_VALUE, GET_REFERENCE, WRITE, IDENT), 30),
+        (cpu(MAIN, TO_VALUE, GET_REFERENCE, WRITE), 20),
+        (cpu(MAIN, TO_VALUE, GET_REFERENCE), 31),
+        (cpu(MAIN, TO_VALUE), 4),
+        (cpu(MAIN, OTHER, GET_REFERENCE), 10),
+        (cpu(MAIN, "App!Program.Idle()"), 5),
+    ]})
+
+
+class FocusTests(unittest.TestCase):
+    def report(self, document, *args):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "trace.speedscope.json"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            return subprocess.run([sys.executable, str(SUMMARIZE), str(source), *args], capture_output=True, text=True)
+
+    def focus(self, document, *args):
+        result = self.report(document, *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_prints_the_callers_and_callees_of_one_function(self):
+        result = self.focus(sheet_capture(), "--focus", "GetReference")
+
+        self.assertIn(f"Focus\t{GET_REFERENCE}\n", result)
+        self.assertIn("FocusInclusive\t91.00%\t91.00\n", result)
+        self.assertIn("FocusExclusive\t41.00%\t41.00\n", result)
+        self.assertEqual(rows(result, "=== Callers of the focus function"), [
+            ["81.00%", "89.01%", "81.00", "App!Sheet.ToValue()"],
+            ["81.00%", "89.01%", "81.00", "  App!Program.Main()"],
+            ["10.00%", "10.99%", "10.00", "App!Program.Other()"],
+            ["10.00%", "10.99%", "10.00", "  App!Program.Main()"],
+        ])
+        self.assertEqual(rows(result, "=== Callees of the focus function"), [
+            ["50.00%", "54.95%", "50.00", "App!Sheet.WriteSheetName()"],
+            ["30.00%", "32.97%", "30.00", "  App!Sheet.IsSheetNameIdent()"],
+            ["20.00%", "21.98%", "20.00", "  (self)"],
+            ["41.00%", "45.05%", "41.00", "(self)"],
+        ])
+        # The trees replace the thread table and the flat rankings.
+        self.assertNotIn("threads by", result)
+        self.assertNotIn("functions by", result)
+
+    def test_rows_past_the_count_or_under_one_percent_are_folded_and_depth_caps_the_tree(self):
+        document = sheet_capture()
+        document["profiles"][0]["weights"][2] += 1000  # GetReference's self time dwarfs WriteSheetName
+        folded = self.focus(document, "--focus", "GetReference", "--limit", "1", "--depth", "1")
+
+        self.assertEqual([row[3] for row in rows(folded, "=== Callees of the focus function")],
+                         ["(self)", "(1 more)"])
+        self.assertEqual([row[3] for row in rows(folded, "=== Callers of the focus function")],
+                         ["App!Sheet.ToValue()", "(1 more)"])
+        self.assertIn("1 levels up", folded)
+
+        tiny = self.focus(document, "--focus", "GetReference")
+        callees = [row[3] for row in rows(tiny, "=== Callees of the focus function")]
+        self.assertEqual(callees, ["(self)", "App!Sheet.WriteSheetName()", "  App!Sheet.IsSheetNameIdent()",
+                                   "  (self)"])
+        # Other's 10 ms is under 1% of GetReference's 1091, so it is folded.
+        self.assertEqual([row[3] for row in rows(tiny, "=== Callers of the focus function")],
+                         ["App!Sheet.ToValue()", "  App!Program.Main()", "(1 more)"])
+
+    def test_a_recursive_function_is_counted_once_from_its_outermost_call(self):
+        rec = "App!Tree.Walk()"
+        result = self.focus(sampled_capture({"Thread (1)": [
+            (cpu(MAIN, rec, rec, "App!Tree.Leaf()"), 6),
+            (cpu(MAIN, rec), 4),
+        ]}), "--focus", "Walk")
+
+        self.assertIn("FocusInclusive\t100.00%\t10.00\n", result)
+        self.assertEqual(rows(result, "=== Callees of the focus function"), [
+            ["60.00%", "60.00%", "6.00", "App!Tree.Walk()"],
+            ["60.00%", "60.00%", "6.00", "  App!Tree.Leaf()"],
+            ["40.00%", "40.00%", "4.00", "(self)"],
+        ])
+        self.assertEqual(rows(result, "=== Callers of the focus function"),
+                         [["100.00%", "100.00%", "10.00", "App!Program.Main()"]])
+
+    def test_a_caller_that_is_sometimes_outermost_keeps_that_share_in_its_own_row(self):
+        result = self.focus(sampled_capture({"Thread (1)": [
+            (cpu("App!A()", "App!Focus()"), 5),
+            (cpu("App!Root()", "App!A()", "App!Focus()"), 5),
+        ]}), "--focus", "Focus")
+
+        self.assertEqual(rows(result, "=== Callers of the focus function"), [
+            ["100.00%", "100.00%", "10.00", "App!A()"],
+            ["50.00%", "50.00%", "5.00", "  (no caller: outermost managed frame)"],
+            ["50.00%", "50.00%", "5.00", "  App!Root()"],
+        ])
+
+    def test_the_name_is_matched_whole_first_and_an_ambiguous_one_is_refused_with_candidates(self):
+        for needle in (GET_REFERENCE, "App!Sheet.GetReference(...)", "App!Sheet.GetReference", "sheet.getreference"):
+            with self.subTest(needle=needle):
+                self.assertIn(f"Focus\t{GET_REFERENCE}\n", self.focus(sheet_capture(), "--focus", needle))
+        # A whole trailing name wins over the functions that merely contain it.
+        self.assertIn(f"Focus\t{WRITE}\n", self.focus(sheet_capture(), "--focus", "WriteSheetName"))
+
+        ambiguous = self.report(sheet_capture(), "--focus", "SheetName")
+        self.assertEqual(ambiguous.returncode, 1)
+        self.assertIn("'SheetName' matches 2 functions", ambiguous.stderr)
+        self.assertIn(f"50.00\t{WRITE}", ambiguous.stderr)
+        self.assertIn(f"30.00\t{IDENT}", ambiguous.stderr)
+        self.assertNotIn("Traceback", ambiguous.stderr)
+
+        # Parameterless frames match by their trailing name too, and an overload is not preferred for having
+        # parameters: `Run` names both overloads below and is refused, while `RunAll` never matches it.
+        overloads = sampled_capture({"Thread (1)": [
+            (cpu(MAIN, "App!Program.Run()"), 90),
+            (cpu(MAIN, "App!Worker.Run(int32)"), 5),
+            (cpu(MAIN, "App!Program.RunAll()"), 5),
+        ]})
+        for needle, expected in (
+            ("Program.Run", "App!Program.Run()"),
+            ("app!program.run", "App!Program.Run()"),
+            ("App!Program.Run", "App!Program.Run()"),
+            ("Program.Run(...)", "App!Program.Run()"),
+            ("Worker.Run", "App!Worker.Run(int32)"),
+            ("RunAll", "App!Program.RunAll()"),
+            ("Sheet.GetReference(...)", None),
+        ):
+            with self.subTest(needle=needle):
+                if expected is None:
+                    self.assertIn(f"Focus\t{GET_REFERENCE}\n", self.focus(sheet_capture(), "--focus", needle))
+                else:
+                    self.assertIn(f"Focus\t{expected}\n", self.focus(overloads, "--focus", needle))
+        # Overloads on one type: a trimmed row name names both, a whole signature names one.
+        same_type = sampled_capture({"Thread (1)": [
+            (cpu(MAIN, "App!Program.Run()"), 60),
+            (cpu(MAIN, "App!Program.Run(int32)"), 40),
+        ]})
+        for needle in ("App!Program.Run()", "App!Program.Run(int32)"):
+            with self.subTest(needle=needle):
+                self.assertIn(f"Focus\t{needle}\n", self.focus(same_type, "--focus", needle))
+        for needle in ("App!Program.Run(...)", "Program.Run(...)", "Program.Run"):
+            with self.subTest(needle=needle):
+                trimmed = self.report(same_type, "--focus", needle)
+                self.assertEqual(trimmed.returncode, 1)
+                self.assertIn("matches 2 functions", trimmed.stderr)
+                self.assertIn("60.00\tApp!Program.Run()\n", trimmed.stderr)
+                self.assertIn("40.00\tApp!Program.Run(int32)\n", trimmed.stderr)
+
+        both = self.report(overloads, "--focus", "Run")
+        self.assertEqual(both.returncode, 1)
+        self.assertIn("'Run' matches 2 functions", both.stderr)
+        self.assertNotIn("RunAll", both.stderr)
+
+        missing = self.report(sheet_capture(), "--focus", "Nowhere")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("no sampled function matches --focus 'Nowhere'", missing.stderr)
+
+    def test_an_untagged_capture_builds_the_trees_from_time_on_stack(self):
+        result = self.focus(untagged_capture(), "--focus", "Outer")
+
+        self.assertIn("Warning\tNo sample in the capture is tagged", result)
+        self.assertIn("FocusInclusive\t50.00%\t10.00\n", result)
+        self.assertEqual(rows(result, "=== Callees of the focus function"), [
+            ["30.00%", "60.00%", "6.00", "App!Hot.Inner()"],
+            ["20.00%", "40.00%", "4.00", "(self)"],
+        ])
+        self.assertIn("by inclusive on-stack time", result)
+
+    def test_focus_is_refused_for_a_comparison_and_depth_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.speedscope.json"
+            source.write_text(json.dumps(sheet_capture()), encoding="utf-8")
+            compared = subprocess.run([sys.executable, str(SUMMARIZE), str(source), "--baseline", str(source),
+                                       "--focus", "Main"], capture_output=True, text=True)
+        self.assertEqual(compared.returncode, 2)
+        self.assertIn("--focus reports one capture", compared.stderr)
+        self.assertIn("--depth must be positive", self.report(sheet_capture(), "--focus", "Main", "--depth", "0").stderr)
+
+    def test_the_helper_passes_focus_and_depth_and_refuses_bad_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "t.speedscope.json"
+            trace.write_text(json.dumps(sheet_capture()), encoding="utf-8")
+            environment = {"PATH": os.environ.get("PATH", ""), "HOME": directory}
+
+            def run(*args):
+                return subprocess.run(["bash", str(PROFILE_SH), "trace-report", *map(str, args)],
+                                      capture_output=True, text=True, env=environment)
+
+            focused = run(trace, 5, "--focus", "Sheet.GetReference", "--depth", "1")
+            options_first = run(trace, "--focus", "WriteSheetName", 5, 1)
+            cases = {
+                (trace, "--depth", 2): "--depth needs --focus",
+                (trace, "--focus"): "--focus needs a value",
+                (trace, "--focus", "A", "--focus", "B"): "--focus is given twice",
+                (trace, "--focus", "Main", "--depth", "x"): "positive --depth",
+                (trace, "--focus", "Main", "--top", 3): "unknown trace-report option: --top",
+                (trace, 5, 1, 2): "takes a trace, a count and a thread id",
+                (trace, "--focus", "Nowhere"): "no sampled function matches",
+            }
+            refused = {args: run(*args) for args in cases}
+
+        self.assertEqual(focused.returncode, 0, focused.stderr)
+        self.assertIn(f"Focus\t{GET_REFERENCE}\n", focused.stdout)
+        self.assertIn("1 levels down", focused.stdout)
+        self.assertEqual(options_first.returncode, 0, options_first.stderr)
+        self.assertIn("SelectedThread\tThread (1)", options_first.stdout)
+        self.assertIn(f"Focus\t{WRITE}\n", options_first.stdout)
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                self.assertEqual(refused[args].returncode, 1)
+                self.assertIn(message, refused[args].stderr)
+
+
 class ProcessListTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())

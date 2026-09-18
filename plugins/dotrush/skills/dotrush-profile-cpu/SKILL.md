@@ -51,6 +51,14 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    - Report the numbers as on-stack time of that thread, not CPU, and name the `Runtime` line. For CPU-only numbers, suggest running the target on a runtime that tags samples, when that is possible.
    - If every thread sits in a wait, the capture was idle: say so and re-capture while the workload runs rather than diagnosing the waits.
 
+   **To see who calls a hot function and where its time goes, focus on it** instead of piecing a chain together from the inclusive list:
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace-report <TRACE.nettrace> 20 [THREAD_ID] --focus <FUNCTION> [--depth 8]
+   ```
+
+   `FUNCTION` is a name as a ranking row prints it, or its end (`GetReference`, `Sheet.GetReference`), or any part of it. A name that matches several functions is refused with the candidates and their weights; pass one of them as printed. The report keeps its header, then gives `FocusInclusive` and `FocusExclusive` and two indented trees, one level per two spaces: callers of the function going up, and what it calls going down, with `(self)` as its own time at each level. `Percent` is a share of the whole measure (as in the rankings), `OfFocus` a share of the focus function's time; the count caps rows per level, and rows under 1% of the function are folded into `(N more)`. Follow the heaviest callee path down to the frame that holds the time, and name the caller that matters when a function is hot only under one of them.
+
    **Add events to a capture only when the user asks for them** or another tool will read the `.nettrace` (PerfView, Visual Studio). `trace` and `trace --launch` take, anywhere before `--`:
 
    ```bash

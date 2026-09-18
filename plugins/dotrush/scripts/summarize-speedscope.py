@@ -89,6 +89,9 @@ class Totals:
         self.inclusive: collections.Counter[str] = collections.Counter()
         self.unmanaged_exclusive: collections.Counter[str] = collections.Counter()
         self.unmanaged_inclusive: collections.Counter[str] = collections.Counter()
+        # Whole stacks, root first, with the same split, for the call trees under --focus.
+        self.stacks: collections.Counter[tuple[str, ...]] = collections.Counter()
+        self.unmanaged_stacks: collections.Counter[tuple[str, ...]] = collections.Counter()
 
     def add(self, other: Totals) -> None:
         for name, value in vars(other).items():
@@ -121,9 +124,9 @@ def record_stack(stack: list[int], weight: float, names: list[str], totals: Tota
     waiting = leaf in WAITING_LEAVES
     if waiting:
         totals.unmanaged += weight
-        exclusive, inclusive = totals.unmanaged_exclusive, totals.unmanaged_inclusive
+        exclusive, inclusive, stacks = totals.unmanaged_exclusive, totals.unmanaged_inclusive, totals.unmanaged_stacks
     else:
-        exclusive, inclusive = totals.exclusive, totals.inclusive
+        exclusive, inclusive, stacks = totals.exclusive, totals.inclusive, totals.stacks
 
     if waiting or leaf == "CPU_TIME":
         stack_names.pop()
@@ -139,6 +142,7 @@ def record_stack(stack: list[int], weight: float, names: list[str], totals: Tota
     exclusive[meaningful[-1]] += weight
     for name in dict.fromkeys(meaningful):
         inclusive[name] += weight
+    stacks[tuple(meaningful)] += weight
 
 
 def summarize_profile(profile: dict, names: list[str], totals: Totals) -> float:
@@ -242,6 +246,14 @@ class Capture:
             for item in self.selected:
                 self.totals.add(item.totals)
         self.runtime = runtime_version(nettrace) if nettrace else None
+
+    def stacks(self, on_stack: bool) -> collections.Counter[tuple[str, ...]]:
+        """The stacks behind `rankings`, measured the same way."""
+        if not on_stack:
+            return self.totals.stacks
+        if self.untagged:
+            return self.totals.unmanaged_stacks
+        return self.totals.stacks + self.totals.unmanaged_stacks
 
     def rankings(self, on_stack: bool) -> tuple[collections.Counter[str], collections.Counter[str], float]:
         """Exclusive and inclusive weights and their total, as managed CPU or as time on stack."""
@@ -347,7 +359,142 @@ def print_diff(baseline: Capture, current: Capture, limit: int) -> None:
     )
 
 
-def print_report(capture: Capture, limit: int) -> None:
+PARAMETER_LIST = re.compile(r"\(.*\)$", re.DOTALL)
+
+
+def bare(name: str) -> str:
+    """A frame name without its parameter list, an empty `()` included, unlike `shorten`."""
+    return PARAMETER_LIST.sub("", name)
+
+
+# A --focus branch under this share of the focus function's own time is folded into one row.
+FOCUS_MIN_SHARE = 0.01
+
+
+def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
+    """The one sampled function `needle` names. Tried in order, and the first that matches anything decides: the
+    full name with its whole signature; the name without its parameter list; the end of that name after a `.`, `!` or
+    `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case. Past the first, a parameter list on
+    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike."""
+    names = [name for name, value in inclusive.items() if value > 0]
+    stripped = bare(needle)
+    folded = stripped.casefold()
+    ending = re.compile(f"(^|[.!:]){re.escape(folded)}$")
+    tiers = (
+        lambda name: name == needle,
+        lambda name: bare(name) == stripped,
+        lambda name: ending.search(bare(name).casefold()) is not None,
+        lambda name: folded in bare(name).casefold(),
+    )
+    for test in tiers:
+        matches = sorted((name for name in names if test(name)), key=lambda name: (-inclusive[name], name))
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            # Full names, untrimmed: passed back, each one resolves in the first tier.
+            listed = "\n".join(f"  {inclusive[name]:.2f}\t{name}" for name in matches[:10])
+            more = f"\n  ... and {len(matches) - 10} more" if len(matches) > 10 else ""
+            raise ValueError(
+                f"--focus {needle!r} matches {len(matches)} functions; pass more of the name, or a name exactly "
+                f"as listed here (inclusive weight first):\n{listed}{more}"
+            )
+    raise ValueError(f"no sampled function matches --focus {needle!r}")
+
+
+class Node:
+    def __init__(self) -> None:
+        self.weight = 0.0
+        self.children: dict[str, Node] = {}
+
+    def add(self, path, weight: float) -> None:
+        node = self
+        node.weight += weight
+        for name in path:
+            node = node.children.setdefault(name, Node())
+            node.weight += weight
+
+
+def focus_trees(stacks: collections.Counter[tuple[str, ...]], focus: str) -> tuple[Node, Node]:
+    """What the focus function calls and what calls it, taken from its outermost frame in each stack, so a
+    recursive function counts every sample once and its inner calls appear among its own callees."""
+    callers, callees = Node(), Node()
+    for stack, weight in stacks.items():
+        if focus in stack:
+            index = stack.index(focus)
+            callers.add(reversed(stack[:index]), weight)
+            callees.add(stack[index + 1:], weight)
+    return callers, callees
+
+
+class Tree:
+    """How one focus tree is printed. `rest` names the part of a node's time that none of its children has, for
+    the focus function and for every function in the tree that has children, so each level adds up."""
+
+    def __init__(self, rest: str, max_depth: int, limit: int, floor: float) -> None:
+        self.rest = rest
+        self.max_depth, self.limit, self.floor = max_depth, limit, floor
+        # (depth, label, weight, whether the label is a function name)
+        self.rows: list[tuple[int, str, float, bool]] = []
+
+    def add(self, node: Node, depth: int = 0) -> None:
+        """Rows under `node`, heaviest first; siblings past `limit` or under `floor` are folded into one row."""
+        entries = [(name, child.weight, child) for name, child in node.children.items()]
+        remainder = node.weight - sum(child.weight for child in node.children.values())
+        # A leaf below the focus function is all rest, which its own row already says.
+        if remainder > 1e-9 and (depth == 0 or node.children):
+            entries.append((self.rest, remainder, None))
+        entries.sort(key=lambda entry: (-entry[1], entry[0]))
+        shown = [entry for entry in entries[:self.limit] if entry[1] >= self.floor]
+        folded = entries[len(shown):]
+        for name, weight, child in shown:
+            self.rows.append((depth, name, weight, child is not None))
+            if child is not None and depth + 1 < self.max_depth:
+                self.add(child, depth + 1)
+        if folded:
+            self.rows.append((depth, f"({len(folded)} more)", sum(entry[1] for entry in folded), False))
+
+
+def print_tree(title: str, node: Node, tree: Tree, total: float) -> None:
+    print(title)
+    print("Percent\tOfFocus\tWeight\tFunction")
+    tree.add(node)
+    shown = display_names(sorted({label for _, label, _, function in tree.rows if function}))
+    for depth, label, weight, function in tree.rows:
+        percent = weight * 100 / total if total else 0.0
+        of_focus = weight * 100 / node.weight if node.weight else 0.0
+        print(f"{percent:.2f}%\t{of_focus:.2f}%\t{weight:.2f}\t{'  ' * depth}{shown[label] if function else label}")
+
+
+def print_focus(capture: Capture, on_stack: bool, measure: str, needle: str, depth: int, limit: int) -> None:
+    exclusive, inclusive, total = capture.rankings(on_stack)
+    focus = match_focus(needle, inclusive)
+    callers, callees = focus_trees(capture.stacks(on_stack), focus)
+    floor = inclusive[focus] * FOCUS_MIN_SHARE
+
+    def share(value: float) -> str:
+        return f"{value * 100 / total if total else 0.0:.2f}%\t{value:.2f}"
+
+    print(f"Focus\t{focus}")
+    print(f"FocusInclusive\t{share(inclusive[focus])}")
+    print(f"FocusExclusive\t{share(exclusive[focus])}")
+    print(
+        f"Measure\tPercent is a share of all {measure}, OfFocus a share of the focus function's inclusive time, "
+        f"taken from its outermost call in each stack; indentation is one call level; rows past {limit} per "
+        f"level or under {FOCUS_MIN_SHARE:.0%} of the focus function are folded into '(N more)'"
+    )
+    print()
+    print_tree(
+        f"=== Callers of the focus function, {depth} levels up, by inclusive {measure} ===",
+        callers, Tree("(no caller: outermost managed frame)", depth, limit, floor), total,
+    )
+    print()
+    print_tree(
+        f"=== Callees of the focus function, {depth} levels down, by inclusive {measure} ===",
+        callees, Tree("(self)", depth, limit, floor), total,
+    )
+
+
+def print_report(capture: Capture, limit: int, focus: str | None = None, depth: int = 8) -> None:
     on_stack = capture.untagged
     totals = capture.totals
     print(f"Source\t{capture.path.resolve()}")
@@ -377,6 +524,9 @@ def print_report(capture: Capture, limit: int) -> None:
         measure = "managed CPU"
     if capture.async_stitched:
         print("Warning\t" + ASYNC_WARNING.format(which="capture"))
+    if focus is not None:
+        print_focus(capture, on_stack, measure, focus, depth, limit)
+        return
     exclusive, inclusive, total = capture.rankings(on_stack)
     if capture.selected is capture.threads:
         print()
@@ -396,9 +546,17 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, help="compare against this earlier speedscope file")
     parser.add_argument("--baseline-nettrace", type=Path, help="the trace the baseline was converted from")
     parser.add_argument("--baseline-thread", help="the thread id to compare in the baseline")
+    parser.add_argument("--focus", help="print the callers and callees of the one function this names")
+    parser.add_argument("--depth", type=int, default=8, help="the levels in each --focus tree")
     args = parser.parse_args()
     if args.limit < 1:
         parser.error("--limit must be positive")
+    if args.depth < 1:
+        parser.error("--depth must be positive")
+    if args.focus is not None and not args.focus.strip():
+        parser.error("--focus needs a function name")
+    if args.focus is not None and args.baseline is not None:
+        parser.error("--focus reports one capture, not a comparison")
     for option in ("thread", "baseline_thread"):
         value = getattr(args, option)
         if value is not None and not value.isdigit():
@@ -408,11 +566,14 @@ def main() -> int:
     if args.baseline is not None and (args.thread is None) != (args.baseline_thread is None):
         parser.error("a comparison selects a thread in both captures or in neither")
 
-    current = Capture(args.speedscope, args.thread, args.nettrace)
-    if args.baseline is None:
-        print_report(current, args.limit)
-    else:
-        print_diff(Capture(args.baseline, args.baseline_thread, args.baseline_nettrace), current, args.limit)
+    try:
+        current = Capture(args.speedscope, args.thread, args.nettrace)
+        if args.baseline is None:
+            print_report(current, args.limit, args.focus, args.depth)
+        else:
+            print_diff(Capture(args.baseline, args.baseline_thread, args.baseline_nettrace), current, args.limit)
+    except ValueError as error:
+        parser.exit(1, f"{error}\n")
     return 0
 
 
