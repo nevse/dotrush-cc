@@ -25,8 +25,7 @@ Usage:
 Defaults:
   duration    00:00:30 (hh:mm:ss or dd:hh:mm:ss, hh 00-23, mm/ss 00-59;
               mm:ss and hh>23 are rejected, TimeSpan re-reads them as bigger units)
-  output-dir  $DOTRUSH_PROFILE_OUTPUT_DIR, else $CLAUDE_PLUGIN_DATA/profiles,
-              else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles
+  output-dir  $DOTRUSH_PROFILE_OUTPUT_DIR, else <data>/profiles
   count       30
   thread-id   all threads; the id from a report's thread table ranks that thread alone
 
@@ -73,12 +72,13 @@ Launch:
 
 Tools:
   dotnet-trace and dotnet-gcdump are DotRush's own builds at the ref pinned in
-  dotrush-version.json, installed into $CLAUDE_PLUGIN_DATA/diagnostics (else the user cache)
-  exactly as the language server is: downloaded when the ref is a release that ships its
+  dotrush-version.json, installed into <data>/diagnostics exactly as the language server is: downloaded when the ref is a release that ships its
   bundles, built from source otherwise (git and a .NET SDK, a few minutes). They run as
   `dotnet <tool>.dll`. Heap commands need a build whose dotnet-gcdump has --format Json, and
   alloc-report one whose dotnet-trace has it.
   `tools` shows the pin and what is installed without installing anything.
+  <data> is $CLAUDE_PLUGIN_DATA, else the plugin data dir derived from the installed plugin's
+  path (<claude>/plugins/data/<plugin>-<marketplace>), else ${XDG_CACHE_HOME:-~/.cache}/dotrush-cc.
 
 Overrides:
   DOTRUSH_REF              DotRush tag or full commit SHA instead of the pinned one
@@ -169,11 +169,9 @@ output_dir() {
     printf '%s\n' "$1"
   elif [[ -n "${DOTRUSH_PROFILE_OUTPUT_DIR:-}" ]]; then
     printf '%s\n' "$DOTRUSH_PROFILE_OUTPUT_DIR"
-  elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]]; then
-    printf '%s\n' "$CLAUDE_PLUGIN_DATA/profiles"
   else
-    local cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}"
-    printf '%s\n' "$cache_root/dotrush-cc/profiles"
+    # CLAUDE_PLUGIN_DATA does not reach a skill's Bash, so the plugin data dir is derived, as for the tools.
+    printf '%s\n' "$(dotrush_data_dir)/profiles"
   fi
 }
 

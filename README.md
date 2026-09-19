@@ -154,6 +154,8 @@ dotrush-cc/
     ├── scripts/analyze-gcdump.py         # streams gcdump JSON: per-type bytes, retention chains, snapshot diffs
     ├── scripts/dotrush-diagnostics.sh    # runs solution analysis in the session's server and reports the results
     ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
+    ├── scripts/list-dotnet-processes.py  # lists attachable .NET processes (backs dotrush-profile.sh ps)
+    ├── scripts/dotrush-pick-project.sh   # saves the session's project choice and applies it to a running server
     ├── skills/dotrush-pick-project/      # picks the .sln/.slnx/.csproj DotRush loads, applied live
     ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
     ├── skills/dotrush-rename/            # semantic rename: preview, confirm, apply (checks every file first)

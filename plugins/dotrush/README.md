@@ -23,6 +23,8 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/analyze-gcdump.py` | streams the heap graph DotRush's `dotnet-gcdump --format Json` writes: exact per-type bytes, the largest retained objects with their dominator chain, and snapshot diffs (backs `heap-report`/`heap-diff`) |
 | `scripts/dotrush-diagnostics.sh` | injects `dotrush/solutionDiagnostics` into this session's server, waits for the results the proxy captures, and reports them |
 | `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
+| `scripts/list-dotnet-processes.py` | lists attachable .NET processes with elapsed time, main assembly and command line (backs `dotrush-profile.sh ps`) |
+| `scripts/dotrush-pick-project.sh` | saves the session's project choice and sends it to a running server without blocking; paths travel as arguments, never inside JSON or shell source |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
@@ -161,8 +163,9 @@ the tools instead.
 The memory reports need a `dotnet-gcdump` with `--format Json`, and `alloc-report` a `dotnet-trace` with it; each
 refuses a pinned build without it (`tools` shows `gcdump-json=` and `trace-json=`).
 Artifacts never default into your repository: without an explicit output directory they go to
-`$DOTRUSH_PROFILE_OUTPUT_DIR`, else `${CLAUDE_PLUGIN_DATA}/profiles`, else
-`${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles`. Claude or the user can always supply one instead.
+`$DOTRUSH_PROFILE_OUTPUT_DIR`, else `profiles/` in the plugin data dir, the same dir the tools are installed into
+(derived from the plugin's install path when `CLAUDE_PLUGIN_DATA` is unset, as it is in a skill's Bash; outside an
+installed plugin, `${XDG_CACHE_HOME:-~/.cache}/dotrush-cc`). Claude or the user can always supply one instead.
 
 Trace durations must be given as `hh:mm:ss` (or `dd:hh:mm:ss`), with `hh` 00-23 and `mm`/`ss` 00-59.
 Both bounds exist because `dotnet-trace` binds `--duration` with `TimeSpan.Parse`, which reinterprets
@@ -334,7 +337,8 @@ Notes (learned while verifying this):
   `dotrush/loadCompleted`. On a server started with no project, `didChangeConfiguration` alone loads it; adding
   `reloadWorkspace` races that load, and DotRush either never starts analysis or loads the project twice (every
   diagnostic reported twice). The proxy creates `load-completed` in the session
-  dir on `dotrush/loadCompleted`, so reload only when that file exists (`dotrush-pick-project` does this).
+  dir on `dotrush/loadCompleted`, so reload only when that file exists. `scripts/dotrush-pick-project.sh apply <path>`
+  does this, and first checks that the proxy is running and the FIFO is one, so it neither blocks nor leaves a file.
 - Inject `didChangeConfiguration` **before** `reloadWorkspace` (FIFO delivery is in order).
 
 ## Troubleshooting

@@ -15,7 +15,7 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 
 `dotnet-gcdump` deliberately triggers a full generation 2 GC and walks the managed heap. It can pause the target for a noticeable time and can add memory pressure on a large heap. Before collecting from production, a latency-sensitive service, or a target whose role is unclear, explain this impact and obtain confirmation. Run as the same user as the target; on Linux and macOS, also preserve the target's `TMPDIR`.
 
-Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report artifacts: type names, static field names and object sizes describe the application. With no `OUTPUT_DIR` the helper already writes outside the repository (`$DOTRUSH_PROFILE_OUTPUT_DIR`, else `${CLAUDE_PLUGIN_DATA}/profiles`, else the user cache); if you do pass one, keep it out of version control.
+Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report artifacts: type names, static field names and object sizes describe the application. With no `OUTPUT_DIR` the helper already writes outside the repository (`$DOTRUSH_PROFILE_OUTPUT_DIR`, else `profiles/` in the plugin data dir); if you do pass one, keep it out of version control.
 
 ## Workflow
 

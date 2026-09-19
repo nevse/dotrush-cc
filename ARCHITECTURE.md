@@ -63,10 +63,10 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 | Entry | Written by | Read by | Lifetime |
 |---|---|---|---|
 | `workspace.txt`, `pid`, `session.txt`, `claude-pid` | proxy at start | `Session.Find`, pruning | per proxy |
-| `inject.fifo` | proxy creates; CLI, pick-project skill, diagnostics script write | proxy injector | reused |
+| `inject.fifo` | proxy creates; CLI, `dotrush-pick-project.sh`, diagnostics script write | proxy injector | reused |
 | `proxy.log` | proxy | humans, skills on failure | appended |
-| `target.json` | `dotrush-pick-project` skill | proxy replays it at start | per session |
-| `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, pick-project skill | removed at proxy start |
+| `target.json` | `dotrush-pick-project.sh` | proxy replays it at start | per session |
+| `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, `dotrush-pick-project.sh` | removed at proxy start |
 | `diagnostics.json` | proxy, coalesced every 0.5 s | diagnostics script | reset at proxy start |
 | `responses/` | proxy creates empty; `<uuid>.json` via temp + rename | CLI deletes after reading; stale after 10 min | recreated at proxy start only |
 | `edits/` | `rename preview`: `<plan>.json` (sha256 and URI per file), `<plan>.diff` | `rename apply` | removed at proxy start |
