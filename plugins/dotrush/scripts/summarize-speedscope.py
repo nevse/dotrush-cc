@@ -381,10 +381,12 @@ FOCUS_MIN_SHARE = 0.01
 def match_focus(
     needle: str, inclusive: collections.Counter[str], kind: str = "function", kinds: str = "functions"
 ) -> str:
-    """The one sampled function `needle` names. Tried in order, and the first that matches anything decides: the
+    """The one sampled function `needle` names, or with --allocations the one function or allocated type; `kind` and
+    `kinds` name what is matched in the errors. Tried in order, and the first that matches anything decides: the
     full name with its whole signature; the name without its parameter list; the end of that name after a `.`, `!` or
     `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case. Past the first, a parameter list on
-    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike."""
+    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike, and so is
+    an allocation kind, so `System.String` names `System.String (Small)` when no other kind was allocated."""
     names = [name for name, value in inclusive.items() if value > 0]
     stripped = bare(needle)
     folded = stripped.casefold()
@@ -645,9 +647,11 @@ def print_allocation_focus(allocations: Allocations, needle: str, depth: int, li
         f"{FOCUS_MIN_SHARE:.0%} of the focus row are folded into '(N more)'"
     )
     print()
+    # A type's stack starts at the type only when the tick had no managed frame, which the rankings name the same way.
+    rest = NO_MANAGED_FRAME if is_type else "(no caller: outermost managed frame)"
     print_tree(
         f"=== Callers of the focus {'type' if is_type else 'function'}, {depth} levels up, by allocated MB ===",
-        callers, Tree("(no caller: outermost managed frame)", depth, limit, floor), total,
+        callers, Tree(rest, depth, limit, floor), total,
     )
     if not is_type:
         print()
@@ -700,7 +704,8 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, help="compare against this earlier speedscope file")
     parser.add_argument("--baseline-nettrace", type=Path, help="the trace the baseline was converted from")
     parser.add_argument("--baseline-thread", help="the thread id to compare in the baseline")
-    parser.add_argument("--focus", help="print the callers and callees of the one function this names")
+    parser.add_argument("--focus", help="print the callers and callees of the one function this names; with "
+                        "--allocations it may name an allocated type, which prints its callers only")
     parser.add_argument("--depth", type=int, default=8, help="the levels in each --focus tree")
     parser.add_argument("--allocations", action="store_true",
                         help="report the allocation profile of a `dotnet-trace convert --format Json` file")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Collect and summarize bounded .NET CPU traces and managed-heap snapshots with DotRush's own
+# Collect and summarize bounded .NET CPU and allocation traces and managed-heap snapshots with DotRush's own
 # diagnostics tools at the DotRush version this plugin pins.
 set -euo pipefail
 

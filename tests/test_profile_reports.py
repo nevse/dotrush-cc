@@ -1203,7 +1203,7 @@ class AllocationTests(unittest.TestCase):
         self.assertIn("Focus\tSystem.Byte[] (Small)\nFocusBytes\t10.00%\t10.00\n", output)
         self.assertEqual(section(output, "=== Callers of the focus type, 8 levels up, by allocated MB ===")[1:], [
             "9.00%\t90.00%\t9.00\tApp!Program.Main(...)",
-            "1.00%\t10.00%\t1.00\t(no caller: outermost managed frame)",
+            "1.00%\t10.00%\t1.00\t[no managed frame]",
         ])
         self.assertNotIn("Callees", output)
 

@@ -150,7 +150,7 @@ dotrush-cc/
     ├── scripts/install-dotrush.sh        # installs the DotRush server or profiling tools at the pinned ref
     ├── scripts/dotrush-install.sh        # shared install logic: one ref, release bundles or a build from source
     ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU and allocation traces and GC dumps
-    ├── scripts/summarize-speedscope.py   # produces agent-readable managed-CPU rankings
+    ├── scripts/summarize-speedscope.py   # produces agent-readable managed-CPU and allocation rankings
     ├── scripts/analyze-gcdump.py         # streams gcdump JSON: per-type bytes, retention chains, snapshot diffs
     ├── scripts/dotrush-diagnostics.sh    # runs solution analysis in the session's server and reports the results
     ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
