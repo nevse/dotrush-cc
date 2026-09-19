@@ -1,6 +1,6 @@
 ---
 name: dotrush-profile-memory
-description: Profile managed-memory usage and suspected leaks in a running .NET application with DotRush's dotnet-gcdump, report exact per-type sizes and what retains the most memory, and compare snapshots. Use for growing GC heaps, retained object types, surviving-object counts, retention paths, or when the user asks to create a heap dump. Do not use for CPU hot paths, allocation-rate or allocation-count questions (a gcdump forces a full GC and sees only survivors), or native-memory-only problems.
+description: Profile managed-memory usage and suspected leaks in a running .NET application with DotRush's dotnet-gcdump, report exact per-type sizes and what retains the most memory, and compare snapshots. Use for growing GC heaps, retained object types, surviving-object counts, retention paths, or when the user asks to create a heap dump. Do not use for CPU hot paths, allocation-rate or "what allocates" questions (a gcdump forces a full GC and sees only survivors; use dotrush-profile-allocations), or native-memory-only problems.
 ---
 
 # Profile a .NET managed heap
@@ -60,4 +60,4 @@ Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report ar
 - If collection fails because heap events were dropped or memory is constrained, stop and report that limitation rather than retrying repeatedly against a sensitive process.
 - The `.gcdump.json` is larger than the `.gcdump`. The report reads it as a stream but keeps about 8 bytes per object in memory, so a heap of tens of millions of objects needs hundreds of megabytes to report on.
 - For a full process dump, native-memory investigation, or deadlock analysis, use `dotnet-dump` or platform tools; this skill intentionally collects only GC dumps.
-- Use `dotrush-profile-cpu` for high CPU, hot paths, or latency traces.
+- Use `dotrush-profile-cpu` for high CPU, hot paths, or latency traces, and `dotrush-profile-allocations` for allocation rate and what allocates.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize managed CPU stacks in a Speedscope JSON file."""
+"""Summarize managed CPU stacks, or with --allocations the allocation profile, in a Speedscope JSON file."""
 
 from __future__ import annotations
 
@@ -56,8 +56,14 @@ def runtime_version(nettrace: Path) -> str | None:
     return None
 
 
+# The allocation profile's leaves: an allocated type and the runtime's allocation kind, which is no parameter list.
+ALLOCATION_KIND = re.compile(r" \((Small|Large|Pinned)\)$")
+
+
 def shorten(name: str) -> str:
     """Drop an IL parameter list. An empty `()` is already short, so it is left alone."""
+    if ALLOCATION_KIND.search(name):
+        return name
     return IL_SIGNATURE.sub("(...)", name)
 
 
@@ -363,19 +369,24 @@ PARAMETER_LIST = re.compile(r"\(.*\)$", re.DOTALL)
 
 
 def bare(name: str) -> str:
-    """A frame name without its parameter list, an empty `()` included, unlike `shorten`."""
-    return PARAMETER_LIST.sub("", name)
+    """A frame name without its parameter list, an empty `()` included, unlike `shorten`. An allocated type's
+    kind, as in `System.String (Small)`, goes the same way."""
+    return PARAMETER_LIST.sub("", name).rstrip()
 
 
 # A --focus branch under this share of the focus function's own time is folded into one row.
 FOCUS_MIN_SHARE = 0.01
 
 
-def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
-    """The one sampled function `needle` names. Tried in order, and the first that matches anything decides: the
+def match_focus(
+    needle: str, inclusive: collections.Counter[str], kind: str = "function", kinds: str = "functions"
+) -> str:
+    """The one sampled function `needle` names, or with --allocations the one function or allocated type; `kind` and
+    `kinds` name what is matched in the errors. Tried in order, and the first that matches anything decides: the
     full name with its whole signature; the name without its parameter list; the end of that name after a `.`, `!` or
     `:` (`Method`, `Type.Method`), ignoring case; any part of it, ignoring case. Past the first, a parameter list on
-    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike."""
+    `needle` is dropped too, so a trimmed `Type.Method(...)` copied from a row names every overload alike, and so is
+    an allocation kind, so `System.String` names `System.String (Small)` when no other kind was allocated."""
     names = [name for name, value in inclusive.items() if value > 0]
     stripped = bare(needle)
     folded = stripped.casefold()
@@ -395,10 +406,10 @@ def match_focus(needle: str, inclusive: collections.Counter[str]) -> str:
             listed = "\n".join(f"  {inclusive[name]:.2f}\t{name}" for name in matches[:10])
             more = f"\n  ... and {len(matches) - 10} more" if len(matches) > 10 else ""
             raise ValueError(
-                f"--focus {needle!r} matches {len(matches)} functions; pass more of the name, or a name exactly "
+                f"--focus {needle!r} matches {len(matches)} {kinds}; pass more of the name, or a name exactly "
                 f"as listed here (inclusive weight first):\n{listed}{more}"
             )
-    raise ValueError(f"no sampled function matches --focus {needle!r}")
+    raise ValueError(f"no sampled {kind} matches --focus {needle!r}")
 
 
 class Node:
@@ -428,10 +439,12 @@ def focus_trees(stacks: collections.Counter[tuple[str, ...]], focus: str) -> tup
 
 class Tree:
     """How one focus tree is printed. `rest` names the part of a node's time that none of its children has, for
-    the focus function and for every function in the tree that has children, so each level adds up."""
+    the focus function and for every function in the tree that has children, so each level adds up. `root_rest`,
+    when given, names that part for the focus row alone."""
 
-    def __init__(self, rest: str, max_depth: int, limit: int, floor: float) -> None:
+    def __init__(self, rest: str, max_depth: int, limit: int, floor: float, root_rest: str | None = None) -> None:
         self.rest = rest
+        self.root_rest = root_rest or rest
         self.max_depth, self.limit, self.floor = max_depth, limit, floor
         # (depth, label, weight, whether the label is a function name)
         self.rows: list[tuple[int, str, float, bool]] = []
@@ -442,7 +455,7 @@ class Tree:
         remainder = node.weight - sum(child.weight for child in node.children.values())
         # A leaf below the focus function is all rest, which its own row already says.
         if remainder > 1e-9 and (depth == 0 or node.children):
-            entries.append((self.rest, remainder, None))
+            entries.append((self.root_rest if depth == 0 else self.rest, remainder, None))
         entries.sort(key=lambda entry: (-entry[1], entry[0]))
         shown = [entry for entry in entries[:self.limit] if entry[1] >= self.floor]
         folded = entries[len(shown):]
@@ -537,6 +550,155 @@ def print_report(capture: Capture, limit: int, focus: str | None = None, depth: 
     print_ranking(f"=== Top {limit} functions by inclusive {measure} ===", inclusive, total, limit)
 
 
+# The profile `dotnet-trace convert --format Json` writes from the GCAllocationTick events of a capture.
+ALLOCATION_PROFILE = "Allocations"
+MB = 1024 * 1024
+NO_MANAGED_FRAME = "[no managed frame]"
+
+
+class Allocations:
+    """The allocation profile of a `--format Json` file: one sample per GCAllocationTick, weighted by the bytes
+    allocated since the previous tick, with the allocated type and kind (`System.String (Small)`) as its leaf.
+    Weights are kept in MB, so the focus trees print them like any other weight."""
+
+    def __init__(self, path: Path, nettrace: Path | None) -> None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        names = [frame.get("name", "<unnamed>") for frame in document["shared"]["frames"]]
+        profiles = document.get("profiles", [])
+        allocations = [profile for profile in profiles if profile.get("name", "").startswith(ALLOCATION_PROFILE)]
+        if not allocations:
+            raise ValueError(
+                f"no allocation samples in {path}: capture with --profile gc-verbose, which records GCAllocationTick"
+            )
+        self.path = path
+        self.total = 0.0
+        self.samples = 0
+        self.types: collections.Counter[str] = collections.Counter()
+        self.exclusive: collections.Counter[str] = collections.Counter()
+        self.inclusive: collections.Counter[str] = collections.Counter()
+        # How many samples each row rests on: a row backed by a handful is an estimate of a handful of ticks.
+        self.type_samples: collections.Counter[str] = collections.Counter()
+        self.exclusive_samples: collections.Counter[str] = collections.Counter()
+        self.inclusive_samples: collections.Counter[str] = collections.Counter()
+        # Whole stacks, root first and ending in the type, for the trees under --focus.
+        self.stacks: collections.Counter[tuple[str, ...]] = collections.Counter()
+        for profile in allocations:
+            for stack, weight in zip(profile.get("samples", []), profile.get("weights", [])):
+                if not stack or weight <= 0:
+                    continue
+                size = float(weight) / MB
+                frames = [names[index] for index in stack]
+                allocated = frames.pop()
+                frames = [name for name in frames if not is_structural(name)]
+                self.total += size
+                self.samples += 1
+                self.types[allocated] += size
+                self.type_samples[allocated] += 1
+                allocator = frames[-1] if frames else NO_MANAGED_FRAME
+                self.exclusive[allocator] += size
+                self.exclusive_samples[allocator] += 1
+                for name in dict.fromkeys(frames):
+                    self.inclusive[name] += size
+                    self.inclusive_samples[name] += 1
+                self.stacks[(*frames, allocated)] += size
+        # The thread profiles run on the capture's clock; the CPU and allocation profiles are sums of weights.
+        timed = [profile for profile in profiles if profile.get("type") == "evented"]
+        self.wall_clock = (
+            max(float(p.get("endValue", 0)) for p in timed) - min(float(p.get("startValue", 0)) for p in timed)
+            if timed else None
+        )
+        self.runtime = runtime_version(nettrace) if nettrace else None
+
+
+def print_allocation_ranking(
+    title: str, column: str, values: collections.Counter[str], samples: collections.Counter[str], total: float,
+    limit: int,
+) -> None:
+    print(title)
+    print(f"Percent\tMB\tSamples\t{column}")
+    ranked = sorted(values.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    if not ranked:
+        print("(no allocation samples)")
+        return
+    shown = display_names([name for name, _ in ranked])
+    for name, value in ranked:
+        print(f"{value * 100 / total if total else 0.0:.2f}%\t{value:.2f}\t{samples[name]}\t{shown[name]}")
+
+
+def print_allocation_focus(allocations: Allocations, needle: str, depth: int, limit: int) -> None:
+    # A type is a leaf of every stack, so focusing on it answers "who allocates this"; it has no callees.
+    candidates = allocations.inclusive + allocations.types
+    focus = match_focus(needle, candidates, "function or type", "functions or types")
+    is_type = focus in allocations.types
+    callers, callees = focus_trees(allocations.stacks, focus)
+    floor = candidates[focus] * FOCUS_MIN_SHARE
+    total = allocations.total
+
+    def share(value: float) -> str:
+        return f"{value * 100 / total if total else 0.0:.2f}%\t{value:.2f}"
+
+    print(f"Focus\t{focus}")
+    if is_type:
+        print(f"FocusBytes\t{share(allocations.types[focus])}")
+    else:
+        print(f"FocusInclusive\t{share(allocations.inclusive[focus])}")
+        print(f"FocusExclusive\t{share(allocations.exclusive[focus])}")
+    print(
+        "Measure\tPercent is a share of AllocatedMB, OfFocus a share of the focus row's MB, taken from its outermost "
+        f"call in each stack; indentation is one call level; rows past {limit} per level or under "
+        f"{FOCUS_MIN_SHARE:.0%} of the focus row are folded into '(N more)'"
+    )
+    print()
+    # A type's stack starts at the type only when the tick had no managed frame, which the rankings name the same way.
+    # Further up, a caller's own share is still the stacks it was the outermost frame of.
+    print_tree(
+        f"=== Callers of the focus {'type' if is_type else 'function'}, {depth} levels up, by allocated MB ===",
+        callers,
+        Tree("(no caller: outermost managed frame)", depth, limit, floor, NO_MANAGED_FRAME if is_type else None),
+        total,
+    )
+    if not is_type:
+        print()
+        print_tree(
+            f"=== Callees of the focus function, {depth} levels down, by allocated MB; types are the leaves ===",
+            callees, Tree("(self)", depth, limit, floor), total,
+        )
+
+
+def print_allocations(allocations: Allocations, limit: int, focus: str | None = None, depth: int = 8) -> None:
+    print(f"Source\t{allocations.path.resolve()}")
+    print(f"Runtime\t{allocations.runtime or 'unknown'}")
+    print(f"AllocationSamples\t{allocations.samples}")
+    print(f"AllocatedMB\t{allocations.total:.2f}")
+    if allocations.wall_clock:
+        print(f"WallClockDuration\t{allocations.wall_clock:.2f} ms")
+        print(f"AllocationRate\t{allocations.total * 1000 / allocations.wall_clock:.2f} MB/s")
+    print(
+        "Measure\tEstimates from GCAllocationTick: the runtime raises one event per ~100 KB allocated and charges "
+        "that whole amount to the object that crossed the threshold, so a row resting on few samples is noise. "
+        "Types carry the runtime's allocation kind (Small, Large for the LOH, Pinned). Percent is a share of "
+        "AllocatedMB"
+    )
+    if focus is not None:
+        print_allocation_focus(allocations, focus, depth, limit)
+        return
+    print()
+    print_allocation_ranking(
+        f"=== Top {limit} types by allocated MB ===", "Type",
+        allocations.types, allocations.type_samples, allocations.total, limit,
+    )
+    print()
+    print_allocation_ranking(
+        f"=== Top {limit} functions by exclusive allocated MB (the frame that allocated) ===", "Function",
+        allocations.exclusive, allocations.exclusive_samples, allocations.total, limit,
+    )
+    print()
+    print_allocation_ranking(
+        f"=== Top {limit} functions by inclusive allocated MB ===", "Function",
+        allocations.inclusive, allocations.inclusive_samples, allocations.total, limit,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("speedscope", type=Path)
@@ -546,8 +708,11 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, help="compare against this earlier speedscope file")
     parser.add_argument("--baseline-nettrace", type=Path, help="the trace the baseline was converted from")
     parser.add_argument("--baseline-thread", help="the thread id to compare in the baseline")
-    parser.add_argument("--focus", help="print the callers and callees of the one function this names")
+    parser.add_argument("--focus", help="print the callers and callees of the one function this names; with "
+                        "--allocations it may name an allocated type, which prints its callers only")
     parser.add_argument("--depth", type=int, default=8, help="the levels in each --focus tree")
+    parser.add_argument("--allocations", action="store_true",
+                        help="report the allocation profile of a `dotnet-trace convert --format Json` file")
     args = parser.parse_args()
     if args.limit < 1:
         parser.error("--limit must be positive")
@@ -555,6 +720,8 @@ def main() -> int:
         parser.error("--depth must be positive")
     if args.focus is not None and not args.focus.strip():
         parser.error("--focus needs a function name")
+    if args.allocations and (args.baseline is not None or args.thread is not None):
+        parser.error("--allocations reports one capture across all threads")
     if args.focus is not None and args.baseline is not None:
         parser.error("--focus reports one capture, not a comparison")
     for option in ("thread", "baseline_thread"):
@@ -567,6 +734,9 @@ def main() -> int:
         parser.error("a comparison selects a thread in both captures or in neither")
 
     try:
+        if args.allocations:
+            print_allocations(Allocations(args.speedscope, args.nettrace), args.limit, args.focus, args.depth)
+            return 0
         current = Capture(args.speedscope, args.thread, args.nettrace)
         if args.baseline is None:
             print_report(current, args.limit, args.focus, args.depth)

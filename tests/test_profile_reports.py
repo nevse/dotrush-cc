@@ -660,12 +660,17 @@ class SpeedscopeTests(unittest.TestCase):
 
 
 # Stands in for `dotnet <tool>.dll ...`: logs each call, and for `collect` writes the --output file
-# (unless STUB_NO_TRACE is set) and exits with STUB_EXIT; `convert` writes the speedscope file.
+# (unless STUB_NO_TRACE is set) and exits with STUB_EXIT; `convert` writes the speedscope file, or the
+# .nettrace.json for --format Json, which `--help` lists unless STUB_NO_TRACE_JSON is set.
 FAKE_DOTNET = r"""#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\n")
+if "--help" in args:
+    print("  --format <Chromium|NetTrace|Speedscope>" if os.environ.get("STUB_NO_TRACE_JSON")
+          else "  --format <Chromium|Json|NetTrace|Speedscope>")
+    sys.exit(0)
 if args[1] == "ps":
     sys.stdout.write(os.environ.get("STUB_PS", ""))
     sys.exit(0)
@@ -676,8 +681,10 @@ if args[1] == "collect":
     print("collect chatter")
     sys.exit(int(os.environ.get("STUB_EXIT", "0")))
 if args[1] == "convert":
-    with open(output[: -len(".nettrace")] + ".speedscope.json", "w", encoding="utf-8") as target:
-        target.write(os.environ["STUB_SPEEDSCOPE"])
+    json_format = args[args.index("--format") + 1] == "Json"
+    with open(output[: -len(".nettrace")] + (".nettrace.json" if json_format else ".speedscope.json"), "w",
+              encoding="utf-8") as target:
+        target.write(os.environ["STUB_NETTRACE_JSON" if json_format else "STUB_SPEEDSCOPE"])
 """
 
 
@@ -1086,6 +1093,238 @@ class FocusTests(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(refused[args].returncode, 1)
                 self.assertIn(message, refused[args].stderr)
+
+
+def allocation_capture(samples, thread_ms=None, cpu=True):
+    """A `dotnet-trace convert --format Json` document: [(frames root to leaf, allocated type, bytes), ...] as the
+    allocation profile, a CPU profile unless cpu is False, and one evented thread spanning thread_ms when given."""
+    frames = []
+
+    def index(name):
+        if name not in frames:
+            frames.append(name)
+        return frames.index(name)
+
+    profiles = []
+    if cpu:
+        profiles.append({"type": "sampled", "name": "CPU (all threads)", "unit": "milliseconds", "startValue": 0,
+                         "endValue": 1, "samples": [[index("App!Program.Main()")]], "weights": [1]})
+    profiles.append({
+        "type": "sampled", "name": "Allocations (estimate, ~100 KB per sample)", "unit": "bytes", "startValue": 0,
+        "endValue": sum(size for _, _, size in samples),
+        "samples": [[index(frame) for frame in stack] + [index(allocated)] for stack, allocated, _ in samples],
+        "weights": [size for _, _, size in samples],
+    })
+    if thread_ms is not None:
+        profiles.append({"type": "evented", "name": "Thread (7)", "unit": "milliseconds", "startValue": 10,
+                         "endValue": 10 + thread_ms, "events": []})
+    return {"shared": {"frames": [{"name": frame} for frame in frames]}, "profiles": profiles}
+
+
+MAIN_FRAME, BUILD, TO_STRING = "App!Program.Main(class System.String[])", "App!Report.Build(int32)", "System.Private.CoreLib!System.Text.StringBuilder.ToString()"
+MB = 1024 * 1024
+
+
+def report_capture():
+    """40 MB of strings from ToString under Build, 20 MB of char arrays in Build itself, 30 MB of large byte arrays
+    and 10 MB of small ones in Main, and one tick with no managed frame."""
+    return allocation_capture([
+        *[((MAIN_FRAME, BUILD, TO_STRING), "System.String (Small)", 10 * MB)] * 4,
+        *[((MAIN_FRAME, BUILD), "System.Char[] (Small)", 10 * MB)] * 2,
+        ((MAIN_FRAME,), "System.Byte[] (Large)", 30 * MB),
+        ((MAIN_FRAME,), "System.Byte[] (Small)", 9 * MB),
+        ((), "System.Byte[] (Small)", 1 * MB),
+    ], thread_ms=2000)
+
+
+class AllocationTests(unittest.TestCase):
+    def report(self, document, *args):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "trace.nettrace.json"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            return subprocess.run([sys.executable, str(SUMMARIZE), str(source), "--allocations", *args],
+                                  capture_output=True, text=True)
+
+    def output(self, document, *args):
+        result = self.report(document, *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_ranks_types_and_the_functions_that_allocated_them_in_mb_with_their_samples(self):
+        output = self.output(report_capture())
+
+        self.assertIn("AllocationSamples\t9\n", output)
+        self.assertIn("AllocatedMB\t100.00\n", output)
+        self.assertIn("WallClockDuration\t2000.00 ms\n", output)
+        self.assertIn("AllocationRate\t50.00 MB/s\n", output)
+        self.assertEqual(section(output, "=== Top 30 types by allocated MB ===")[1:], [
+            "40.00%\t40.00\t4\tSystem.String (Small)",
+            "30.00%\t30.00\t1\tSystem.Byte[] (Large)",
+            "20.00%\t20.00\t2\tSystem.Char[] (Small)",
+            "10.00%\t10.00\t2\tSystem.Byte[] (Small)",
+        ])
+        self.assertEqual(section(output, "=== Top 30 functions by exclusive allocated MB (the frame that allocated) ===")[1:], [
+            "40.00%\t40.00\t4\tSystem.Private.CoreLib!System.Text.StringBuilder.ToString()",
+            "39.00%\t39.00\t2\tApp!Program.Main(...)",
+            "20.00%\t20.00\t2\tApp!Report.Build(...)",
+            "1.00%\t1.00\t1\t[no managed frame]",
+        ])
+        self.assertEqual(section(output, "=== Top 30 functions by inclusive allocated MB ===")[1:], [
+            "99.00%\t99.00\t8\tApp!Program.Main(...)",
+            "60.00%\t60.00\t6\tApp!Report.Build(...)",
+            "40.00%\t40.00\t4\tSystem.Private.CoreLib!System.Text.StringBuilder.ToString()",
+        ])
+
+    def test_limit_caps_every_ranking_and_a_capture_without_threads_has_no_rate(self):
+        output = self.output(allocation_capture([((MAIN_FRAME,), "System.String (Small)", MB)], cpu=False),
+                             "--limit", "1")
+
+        self.assertNotIn("WallClockDuration", output)
+        self.assertNotIn("AllocationRate", output)
+        self.assertEqual(len(section(output, "=== Top 1 types by allocated MB ===")), 2)
+
+    def test_focus_on_a_function_prints_its_callers_and_the_types_it_allocates(self):
+        output = self.output(report_capture(), "--focus", "Report.Build")
+
+        self.assertIn(f"Focus\t{BUILD}\n", output)
+        self.assertIn("FocusInclusive\t60.00%\t60.00\n", output)
+        self.assertIn("FocusExclusive\t20.00%\t20.00\n", output)
+        self.assertEqual(section(output, "=== Callers of the focus function, 8 levels up, by allocated MB ===")[1:],
+                         ["60.00%\t100.00%\t60.00\tApp!Program.Main(...)"])
+        self.assertEqual(section(output, "=== Callees of the focus function, 8 levels down, by allocated MB; types are the leaves ===")[1:], [
+            "40.00%\t66.67%\t40.00\tSystem.Private.CoreLib!System.Text.StringBuilder.ToString()",
+            "40.00%\t66.67%\t40.00\t  System.String (Small)",
+            "20.00%\t33.33%\t20.00\tSystem.Char[] (Small)",
+        ])
+
+    def test_focus_on_a_type_prints_who_allocates_it(self):
+        output = self.output(report_capture(), "--focus", "System.Byte[] (Small)")
+
+        self.assertIn("Focus\tSystem.Byte[] (Small)\nFocusBytes\t10.00%\t10.00\n", output)
+        self.assertEqual(section(output, "=== Callers of the focus type, 8 levels up, by allocated MB ===")[1:], [
+            "9.00%\t90.00%\t9.00\tApp!Program.Main(...)",
+            "1.00%\t10.00%\t1.00\t[no managed frame]",
+        ])
+        self.assertNotIn("Callees", output)
+
+    def test_a_type_caller_that_is_sometimes_outermost_keeps_the_outermost_label(self):
+        # Only the focus row's own remainder is a tick without a managed frame; under Foo it is Foo's outermost share.
+        foo = "App!Foo()"
+        output = self.output(allocation_capture([
+            ((MAIN_FRAME, foo), "System.Byte[] (Small)", MB),
+            ((foo,), "System.Byte[] (Small)", MB),
+            ((), "System.Byte[] (Small)", MB),
+        ]), "--focus", "System.Byte[]")
+
+        self.assertEqual(section(output, "=== Callers of the focus type, 8 levels up, by allocated MB ===")[1:], [
+            "66.67%\t66.67%\t2.00\tApp!Foo()",
+            "33.33%\t33.33%\t1.00\t  (no caller: outermost managed frame)",
+            "33.33%\t33.33%\t1.00\t  App!Program.Main(...)",
+            "33.33%\t33.33%\t1.00\t[no managed frame]",
+        ])
+
+    def test_a_type_named_without_its_kind_is_refused_when_several_kinds_were_allocated(self):
+        result = self.report(report_capture(), "--focus", "System.Byte[]")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("matches 2 functions or types", result.stderr)
+        self.assertIn("30.00\tSystem.Byte[] (Large)\n", result.stderr)
+        self.assertIn("10.00\tSystem.Byte[] (Small)\n", result.stderr)
+        self.assertIn("Focus\tSystem.String (Small)\n", self.output(report_capture(), "--focus", "System.String"))
+
+    def test_a_capture_without_allocation_samples_or_a_cpu_option_is_refused(self):
+        no_allocations = self.report(sampled_capture({"Thread (1)": [(cpu("App!Hot()"), 10)]}))
+        with_thread = self.report(report_capture(), "--thread", "7")
+
+        self.assertEqual(no_allocations.returncode, 1)
+        self.assertIn("no allocation samples", no_allocations.stderr)
+        self.assertIn("--profile gc-verbose", no_allocations.stderr)
+        self.assertEqual(with_thread.returncode, 2)
+        self.assertIn("--allocations reports one capture across all threads", with_thread.stderr)
+
+
+class AllocReportHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root)
+        dotnet = self.root / "dotnet-stub"
+        dotnet.write_text(FAKE_DOTNET, encoding="utf-8")
+        dotnet.chmod(0o755)
+        self.log = self.root / "calls.log"
+        self.env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.root),
+            "DOTRUSH_DOTNET": str(dotnet),
+            "DOTRUSH_DIAGNOSTICS_DIR": str(make_bundle(self.root / "bundle")),
+            "STUB_LOG": str(self.log),
+            "STUB_NETTRACE_JSON": json.dumps(report_capture()),
+        }
+
+    def alloc_report(self, *args, **env):
+        return subprocess.run(["bash", str(PROFILE_SH), "alloc-report", *map(str, args)],
+                              capture_output=True, text=True, env={**self.env, **env})
+
+    def calls(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_converts_a_nettrace_once_and_names_its_runtime(self):
+        trace = self.root / "trace_1.nettrace"
+        trace.write_bytes(CORELIB.encode("utf-16-le"))
+
+        first = self.alloc_report(trace, 2, "--focus", "Build", "--depth", "1")
+        again = self.alloc_report(trace)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn(f"Source\t{self.root / 'trace_1.nettrace.json'}\n", first.stdout)
+        self.assertIn("Runtime\t10.0.10\n", first.stdout)
+        self.assertIn("1 levels down", first.stdout)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("=== Top 30 types by allocated MB ===", again.stdout)
+        converts = [call for call in self.calls() if call[1] == "convert" and "--help" not in call]
+        self.assertEqual(converts, [[str(self.root / "bundle/dotnet-trace.dll"), "convert", str(trace),
+                                     "--format", "Json", "--output", str(trace)]])
+
+    def test_reads_a_nettrace_json_without_converting(self):
+        converted = self.root / "t.nettrace.json"
+        converted.write_text(json.dumps(report_capture()), encoding="utf-8")
+
+        result = self.alloc_report(converted, 3)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Runtime\tunknown\n", result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_refuses_a_dotnet_trace_without_the_json_format(self):
+        trace = self.root / "t.nettrace"
+        trace.write_bytes(b"")
+
+        result = self.alloc_report(trace, STUB_NO_TRACE_JSON="1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("has no --format Json, so it cannot report allocations", result.stderr)
+        self.assertFalse((self.root / "t.nettrace.json").exists())
+
+    def test_refuses_bad_arguments(self):
+        speedscope = self.root / "t.speedscope.json"
+        speedscope.write_text("{}", encoding="utf-8")
+        trace = self.root / "t.nettrace.json"
+        trace.write_text(json.dumps(report_capture()), encoding="utf-8")
+        cases = {
+            (speedscope,): "pass the .nettrace it was converted from",
+            (self.root / "missing.nettrace",): "trace not found",
+            (trace, 0): "positive count",
+            (trace, 5, 1): "takes a trace and a count",
+            (trace, "--depth", 2): "--depth needs --focus",
+            (trace, "--thread", 2): "unknown alloc-report option: --thread",
+            (trace, "--focus", "Nowhere"): "no sampled function or type matches",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                result = self.alloc_report(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
 
 
 class ProcessListTests(unittest.TestCase):
@@ -1598,6 +1837,16 @@ class InstallTests(unittest.TestCase):
         with_format = call_helper("resolve_bundle", "json", env={**env, "STUB_JSON": "1"})
 
         self.assertNotEqual(without.returncode, 0)
+        self.assertIn("has no --format Json", without.stderr)
+        self.assertEqual(with_format.returncode, 0, with_format.stderr)
+
+    def test_alloc_report_refuses_a_pinned_build_whose_dotnet_trace_lacks_the_format(self):
+        env = {**self.env, "DOTRUSH_REF": COMMIT}
+        without = call_helper("resolve_bundle", "trace-json", env=env)
+        with_format = call_helper("resolve_bundle", "trace-json", env={**env, "STUB_JSON": "1"})
+
+        self.assertNotEqual(without.returncode, 0)
+        self.assertIn("dotnet-trace", without.stderr)
         self.assertIn("has no --format Json", without.stderr)
         self.assertEqual(with_format.returncode, 0, with_format.stderr)
 
