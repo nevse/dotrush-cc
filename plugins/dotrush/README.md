@@ -27,6 +27,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace` or launches the target under it, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
+| `skills/dotrush-profile-allocations/` | captures a trace with allocation sampling and reports allocated bytes by type, allocating function and call path |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
 ## The server auto-installs
@@ -36,7 +37,7 @@ The DotRush version this plugin version uses is pinned in `dotrush-version.json`
 ```json
 {
   "repository": "JaneySprings/DotRush",
-  "ref": "2026.09"
+  "ref": "1b942045447104061b30b1b5f135a0e28e07ef6c"
 }
 ```
 
@@ -49,8 +50,10 @@ it by `install-dotrush.sh`, the same way and from the same place:
   a .NET 10 SDK, a few minutes per component). Both are `dotnet publish`ed as DotRush's `build.cake` does
   before its `pack` step zips them into those bundles.
 
-The pin is the 2026.09 release, republished on 13 September 2026 with both bundles and a `dotnet-gcdump` that has
-`--format Json`, so nothing is built.
+The pin is DotRush commit `1b94204` (19 September 2026), one commit past the 2026.09 release: its `dotnet-trace`
+has `--format Json`, whose allocation profile `alloc-report` reads. It has no release yet, so both components are
+built from source on first use; move the pin to the next release tag once it ships, and the bundles are downloaded
+again.
 
 The bundles are platform-neutral and the server has no native launcher, so the proxy starts it as
 `dotnet DotRush.dll`, which needs a .NET 10 or newer runtime on `PATH` or in `DOTNET_ROOT`. On C# LSP start the
@@ -122,11 +125,11 @@ Work: `documentSymbol`, `workspaceSymbol` (needs a non-empty query), `hover`, `g
 loaded (target a solution, not a single `.csproj`).
 
 Not supported: **call hierarchy** (`prepareCallHierarchy`/`incomingCalls`/`outgoingCalls`) — DotRush (as of the
-pinned 2026.09) has no call-hierarchy handler. Use `findReferences` instead.
+pinned ref) has no call-hierarchy handler. Use `findReferences` instead.
 
 ## Profiling .NET applications
 
-The plugin mirrors DotRush's profiling split with two Claude skills:
+The plugin mirrors DotRush's profiling split with three Claude skills:
 
 - Ask Claude to **profile CPU**, find a hot path, investigate high CPU/latency, or invoke
   `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval, or launches a short-lived program
@@ -136,12 +139,17 @@ The plugin mirrors DotRush's profiling split with two Claude skills:
   how much their share of each capture's managed CPU moved. `--profile`, `--providers` and `--buffersize` add
   events to a capture (for example `gc-verbose`) while the thread-time sampler behind the report stays on. `ps` lists attachable processes with their elapsed
   time, main assembly and command line, and `--filter` narrows the list.
+- Ask Claude **what allocates**, about allocation rate or GC pressure, or invoke `dotrush-profile-allocations`. It
+  captures a trace with `--profile gc-verbose`, whose `GCAllocationTick` events sample one allocation per ~100 KB
+  with its type and stack, and `alloc-report` ranks allocated MB by type, by the function that allocated and by
+  inclusive caller, with the samples behind each row. `--focus` takes a type (who allocates it) or a function (its
+  callers, and the types it allocates below it). It converts the `.nettrace` with `dotnet-trace --format Json`.
 - Ask Claude to **profile managed memory**, investigate a suspected leak, compare heap snapshots, or invoke
   `dotrush-profile-memory`. It collects a `.gcdump` together with its heap graph as `.gcdump.json`, reports
   exact per-type bytes and the largest retained objects with the dominator chain that keeps each alive, and
   ranks per-type byte and object-count deltas between a baseline and a later snapshot.
 
-Both skills use `scripts/dotrush-profile.sh`, which runs DotRush's own build of `dotnet-trace` and
+All three skills use `scripts/dotrush-profile.sh`, which runs DotRush's own build of `dotnet-trace` and
 `dotnet-gcdump` ([JaneySprings/diagnostics](https://github.com/JaneySprings/diagnostics)) at the pinned ref. The
 tools are installed into `${CLAUDE_PLUGIN_DATA}/diagnostics` on first use exactly as the server is (see
 [The server auto-installs](#the-server-auto-installs)); a failed build keeps its log in
@@ -150,7 +158,8 @@ tools are installed into `${CLAUDE_PLUGIN_DATA}/diagnostics` on first use exactl
 and the state of the server and the tools, installing nothing. `DOTRUSH_DIAGNOSTICS_DIR` uses a ready directory of
 the tools instead.
 
-The memory reports need a `dotnet-gcdump` with `--format Json`; the heap commands refuse a pinned build without it.
+The memory reports need a `dotnet-gcdump` with `--format Json`, and `alloc-report` a `dotnet-trace` with it; each
+refuses a pinned build without it (`tools` shows `gcdump-json=` and `trace-json=`).
 Artifacts never default into your repository: without an explicit output directory they go to
 `$DOTRUSH_PROFILE_OUTPUT_DIR`, else `${CLAUDE_PLUGIN_DATA}/profiles`, else
 `${XDG_CACHE_HOME:-~/.cache}/dotrush-cc/profiles`. Claude or the user can always supply one instead.

@@ -1,5 +1,16 @@
 # Changelog
 
+### 0.8.0
+- New skill `dotrush-profile-allocations` answers "what allocates": it captures a trace with `--profile gc-verbose`
+  and runs `dotrush-profile.sh alloc-report <trace> [count] [--focus <function|type> [--depth N]]`, which ranks
+  allocated MB by type, by the function that allocated and by inclusive caller, with the samples behind each row,
+  plus `AllocatedMB` and `AllocationRate`. `--focus` on a type prints who allocates it; on a function, its callers
+  and the types it allocates below it. The figures are estimates from `GCAllocationTick`, one sample per ~100 KB.
+- DotRush is pinned to commit `1b94204` (one past the 2026.09 release), whose `dotnet-trace convert --format Json`
+  writes the allocation profile `alloc-report` reads. It has no release, so the server and the profiling tools are
+  built from source on first use (a few minutes, `git` and a .NET SDK). `alloc-report` refuses a build without the
+  format, and `tools` shows `trace-json=`.
+
 ### 0.7.5
 - Claude Code processes started from one agterm tab (background jobs included) no longer share a runtime dir.
   They all inherit the tab's `AGTERM_SESSION_ID`, so their language servers overwrote each other's `pid`,

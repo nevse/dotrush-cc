@@ -16,6 +16,8 @@ Usage:
   dotrush-profile.sh trace-report <trace.nettrace|trace.speedscope.json> [count] [thread-id]
                      [--focus <function> [--depth <levels>]]
   dotrush-profile.sh trace-diff <baseline-trace> <current-trace> [count] [baseline-thread-id current-thread-id]
+  dotrush-profile.sh alloc-report <trace.nettrace|trace.nettrace.json> [count]
+                     [--focus <function|type> [--depth <levels>]]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
   dotrush-profile.sh heap-diff <baseline.gcdump|.gcdump.json> <current.gcdump|.gcdump.json> [count]
@@ -44,6 +46,14 @@ Call trees:
   functions is refused with the candidates. --depth caps each tree, 8 levels by default; count
   caps the rows per level, and rows under 1% of the function's time are folded.
 
+Allocations:
+  alloc-report ranks what a capture taken with --profile gc-verbose allocated: types, the functions
+  that allocated them (exclusive) and their callers (inclusive), in MB with the samples behind each
+  row. The runtime raises one GCAllocationTick per ~100 KB allocated, so every figure is an estimate.
+  It converts the .nettrace with dotnet-trace --format Json, into a .nettrace.json beside it.
+  --focus takes a function, printing its callers and the types it allocates below it, or a type,
+  printing who allocates it; it resolves names as trace-report --focus does.
+
 Comparing:
   trace-diff ranks functions by how much their share of their own capture's managed CPU moved,
   in percentage points, since two captures differ in length and thread count. If either capture
@@ -66,7 +76,8 @@ Tools:
   dotrush-version.json, installed into $CLAUDE_PLUGIN_DATA/diagnostics (else the user cache)
   exactly as the language server is: downloaded when the ref is a release that ships its
   bundles, built from source otherwise (git and a .NET SDK, a few minutes). They run as
-  `dotnet <tool>.dll`. Heap commands need a build whose dotnet-gcdump has --format Json.
+  `dotnet <tool>.dll`. Heap commands need a build whose dotnet-gcdump has --format Json, and
+  alloc-report one whose dotnet-trace has it.
   `tools` shows the pin and what is installed without installing anything.
 
 Overrides:
@@ -111,6 +122,13 @@ supports_gcdump_json() {
   [[ "$help" == *"--format"* ]]
 }
 
+# DotRush's fork adds --format Json to dotnet-trace convert, which writes the allocation profile.
+supports_trace_json() {
+  local help
+  help="$("$DOTRUSH_DOTNET" "$1/dotnet-trace.dll" convert --help </dev/null 2>/dev/null)" || true
+  [[ "$help" == *"Json"* ]]
+}
+
 # Prints the directory to run the tools from: DOTRUSH_DIAGNOSTICS_DIR, else the pinned DotRush
 # diagnostics, installed on first use exactly as the language server is. The tools are
 # framework-dependent and run through the dotnet host.
@@ -126,6 +144,9 @@ resolve_bundle() {
   fi
   if [[ "$need" == json ]] && ! supports_gcdump_json "$dir"; then
     fail "the dotnet-gcdump in $dir has no --format Json; pin a DotRush version that has it"
+  fi
+  if [[ "$need" == trace-json ]] && ! supports_trace_json "$dir"; then
+    fail "the dotnet-trace in $dir has no --format Json, so it cannot report allocations; pin a DotRush version that has it"
   fi
   printf '%s\n' "$dir"
 }
@@ -226,11 +247,33 @@ ensure_speedscope() {
   printf '%s\n' "$speedscope_file"
 }
 
-# The .nettrace beside a speedscope file, under the name `trace` gives its files; a speedscope file from
-# elsewhere simply has no runtime line.
+# Prints the allocation profile for a .nettrace or .nettrace.json, converting a .nettrace that has none yet.
+# The converter names it like the speedscope file, so x.nettrace becomes x.nettrace.json.
+ensure_nettrace_json() {
+  local trace_file="$1" json_file
+  [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
+  if [[ "$trace_file" == *.nettrace.json ]]; then
+    printf '%s\n' "$trace_file"
+    return
+  fi
+  [[ "$trace_file" != *.speedscope.json ]] \
+    || fail "a speedscope file has no allocation samples; pass the .nettrace it was converted from"
+  json_file="$(change_extension "$trace_file" nettrace.json)"
+  if [[ ! -f "$json_file" ]]; then
+    use_bundle trace-json
+    run_tool dotnet-trace convert "$trace_file" --format Json --output "$trace_file" >&2
+    [[ -f "$json_file" ]] || fail "dotnet-trace convert reported success but wrote no $json_file"
+  fi
+  printf '%s\n' "$json_file"
+}
+
+# The .nettrace beside a converted file, under the names `trace` and the converter give them; a converted
+# file from elsewhere simply has no runtime line.
 nettrace_for() {
   if [[ "$1" == *.speedscope.json ]]; then
     printf '%s\n' "${1%.speedscope.json}.nettrace"
+  elif [[ "$1" == *.nettrace.json ]]; then
+    printf '%s\n' "${1%.json}"
   else
     printf '%s\n' "$1"
   fi
@@ -343,6 +386,36 @@ finish_trace() {
   fi
 }
 
+# Splits a report command's arguments ($1 names the command) into positional, focus and depth; --focus and
+# --depth may sit anywhere among the positional arguments.
+parse_report_options() {
+  local command="$1"
+  shift
+  positional=()
+  focus=""
+  depth=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --focus|--depth)
+        [[ $# -ge 2 && -n "$2" ]] || fail "$1 needs a value"
+        if [[ "$1" == --focus ]]; then
+          [[ -z "$focus" ]] || fail "--focus is given twice"
+          focus="$2"
+        else
+          [[ -z "$depth" ]] || fail "--depth is given twice"
+          depth="$2"
+        fi
+        shift 2
+        ;;
+      --*) fail "unknown $command option: $1 (expected --focus or --depth)" ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  [[ -z "$depth" || -n "$focus" ]] || fail "--depth needs --focus"
+  [[ -z "$depth" || "$depth" =~ ^[1-9][0-9]*$ ]] || fail "expected a positive --depth, got '$depth'"
+  return 0
+}
+
 write_heap_report() {
   python3 "$SCRIPT_DIR/analyze-gcdump.py" report "$1" --limit "$2"
 }
@@ -378,6 +451,9 @@ case "$command_name" in
         json="no"
         supports_gcdump_json "$dir" && json="yes"
         state="$state, gcdump-json=$json"
+        json="no"
+        supports_trace_json "$dir" && json="yes"
+        state="$state, trace-json=$json"
       fi
       echo "$component: $state ($dir)"
     done
@@ -463,26 +539,7 @@ case "$command_name" in
 
   trace-report)
     shift
-    positional=()
-    focus=""
-    depth=""
-    while (( $# > 0 )); do
-      case "$1" in
-        --focus|--depth)
-          [[ $# -ge 2 && -n "$2" ]] || fail "$1 needs a value"
-          if [[ "$1" == --focus ]]; then
-            [[ -z "$focus" ]] || fail "--focus is given twice"
-            focus="$2"
-          else
-            [[ -z "$depth" ]] || fail "--depth is given twice"
-            depth="$2"
-          fi
-          shift 2
-          ;;
-        --*) fail "unknown trace-report option: $1 (expected --focus or --depth)" ;;
-        *) positional+=("$1"); shift ;;
-      esac
-    done
+    parse_report_options trace-report "$@"
     (( ${#positional[@]} <= 3 )) || fail "trace-report takes a trace, a count and a thread id, then its options"
     trace_file="${positional[0]-}"
     count="${positional[1]-30}"
@@ -490,10 +547,25 @@ case "$command_name" in
     [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
     require_count "$count"
     [[ -z "$thread" || "$thread" =~ ^[0-9]+$ ]] || fail "expected a numeric thread id, got '$thread'"
-    [[ -z "$depth" || -n "$focus" ]] || fail "--depth needs --focus"
-    [[ -z "$depth" || "$depth" =~ ^[1-9][0-9]*$ ]] || fail "expected a positive --depth, got '$depth'"
     speedscope_file="$(ensure_speedscope "$trace_file")" || exit 1
     write_trace_report "$speedscope_file" "$count" "$(nettrace_for "$trace_file")" "$thread" "$focus" "$depth"
+    ;;
+
+  alloc-report)
+    shift
+    parse_report_options alloc-report "$@"
+    (( ${#positional[@]} <= 2 )) || fail "alloc-report takes a trace and a count, then its options"
+    trace_file="${positional[0]-}"
+    count="${positional[1]-30}"
+    [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
+    require_count "$count"
+    json_file="$(ensure_nettrace_json "$trace_file")" || exit 1
+    args=("$json_file" --allocations --limit "$count")
+    nettrace="$(nettrace_for "$json_file")"
+    [[ -f "$nettrace" ]] && args+=(--nettrace "$nettrace")
+    [[ -n "$focus" ]] && args+=(--focus "$focus")
+    [[ -n "$depth" ]] && args+=(--depth "$depth")
+    python3 "$SCRIPT_DIR/summarize-speedscope.py" "${args[@]}"
     ;;
 
   trace-diff)

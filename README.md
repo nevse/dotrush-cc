@@ -3,7 +3,7 @@
 A Claude Code **marketplace** containing the `dotrush` plugin: the [DotRush](https://github.com/JaneySprings/DotRush)
 Roslyn language server wired into Claude Code's `LSP` tool for C#/.NET, plus a stdio **proxy** that can
 inject custom LSP messages into the running server and read the responses, and skills for semantic renames,
-solution diagnostics, and CPU and managed-memory profiling.
+solution diagnostics, and CPU, allocation and managed-memory profiling.
 
 The DotRush server is **not** committed here. The DotRush version is pinned in
 [`dotrush-version.json`](plugins/dotrush/dotrush-version.json), and on first use the plugin **downloads that
@@ -95,6 +95,14 @@ and file names are not renamed (the `dotrush-rename` skill).
 Claude finds the process (or asks which one), captures a `dotnet-trace`, and reports the hottest methods
 with their exclusive and inclusive time, pointing out where JIT inlining moved samples into a caller.
 
+**Find what allocates**:
+
+> this import loop triggers a gen0 GC every few milliseconds — what is allocating?
+
+Claude captures a trace with allocation sampling (`--profile gc-verbose`) and ranks the allocated types, the
+functions that allocated them and the application callers above them, then follows the biggest row down to its
+call path with `alloc-report --focus`. Every figure is an estimate from one sample per ~100 KB allocated.
+
 **Chase a memory leak**:
 
 > memory keeps growing in `MyApp.Worker` — take a baseline heap snapshot, I'll run the import job, then take another and compare
@@ -112,6 +120,8 @@ P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   #
 "$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 # always hh:mm:ss — 00:30 would mean 30 minutes
 "$P/scripts/dotrush-profile.sh" trace --launch 00:02:00 -- dotnet bin/Release/net10.0/Bench.dll  # trace from startup
 "$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 --profile gc-verbose   # add GC and allocation events to the capture
+"$P/scripts/dotrush-profile.sh" alloc-report trace.nettrace 20                    # what that capture allocated, by type and function
+"$P/scripts/dotrush-profile.sh" alloc-report trace.nettrace --focus "System.String (Small)"  # who allocates one type
 "$P/scripts/dotrush-profile.sh" trace-report trace.nettrace 20 --focus Sheet.GetReference  # callers and callees of one function
 "$P/scripts/dotrush-profile.sh" trace-diff before.nettrace after.nettrace 30  # which functions gained or lost CPU share
 "$P/scripts/dotrush-profile.sh" heap 12345           # snapshot + per-type/retention report
@@ -139,7 +149,7 @@ dotrush-cc/
     ├── scripts/dotrush-cli.sh            # builds the CLI on first use into the plugin data dir and runs it
     ├── scripts/install-dotrush.sh        # installs the DotRush server or profiling tools at the pinned ref
     ├── scripts/dotrush-install.sh        # shared install logic: one ref, release bundles or a build from source
-    ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU traces and GC dumps
+    ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU and allocation traces and GC dumps
     ├── scripts/summarize-speedscope.py   # produces agent-readable managed-CPU rankings
     ├── scripts/analyze-gcdump.py         # streams gcdump JSON: per-type bytes, retention chains, snapshot diffs
     ├── scripts/dotrush-diagnostics.sh    # runs solution analysis in the session's server and reports the results
@@ -148,6 +158,7 @@ dotrush-cc/
     ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
     ├── skills/dotrush-rename/            # semantic rename: preview, confirm, apply (checks every file first)
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
+    ├── skills/dotrush-profile-allocations/ # allocation sampling: what allocates, by type and call path
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
     ├── README.md                         # plugin usage
     └── CHANGELOG.md                      # release notes

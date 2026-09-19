@@ -1,6 +1,6 @@
 ---
 name: dotrush-profile-cpu
-description: Profile CPU usage, hot paths, throughput, or latency in a running .NET application, or in a short-lived .NET program or test it launches, with dotnet-trace, then interpret the trace report. Use for high CPU, slow requests, regressions, flame graphs, profiling a benchmark or a single test, or when the user asks to attach a trace profiler. Do not use for managed-memory growth or leak analysis.
+description: Profile CPU usage, hot paths, throughput, or latency in a running .NET application, or in a short-lived .NET program or test it launches, with dotnet-trace, then interpret the trace report. Use for high CPU, slow requests, regressions, flame graphs, profiling a benchmark or a single test, or when the user asks to attach a trace profiler. Do not use for managed-memory growth or leak analysis, or for what allocates (use dotrush-profile-allocations).
 ---
 
 # Profile .NET CPU usage
@@ -65,7 +65,7 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" trace <PID> 00:00:30 --profile gc-verbose [--buffersize 512]
    ```
 
-   `--profile` takes comma-separated `dotnet-trace` profiles (`gc-verbose` for GC and allocation-sampling events, `gc-collect`, `database`; `dotnet-common,dotnet-sampled-thread-time` is the default pair), `--providers` extra EventPipe providers in `dotnet-trace`'s syntax without spaces, and `--buffersize` the buffer in MB (256 by default; raise it if `dotnet-trace` reports dropped events). The helper always keeps `dotnet-sampled-thread-time`, since the report is built from it. `cpu-sampling` and `thread-time` are Linux kernel profiles for `collect-linux` and are refused. The text report still ranks CPU only: it does not count allocations. Extra events add stacks between samples, so a thread with few stack changes but a large weight (often the finalizer under `gc-verbose`) is gap time, not work. Do not enable `System.Threading.Tasks.TplEventSource` for a CPU question: the report then prints a `Warning` because task stacks are stitched across threads.
+   `--profile` takes comma-separated `dotnet-trace` profiles (`gc-verbose` for GC and allocation-sampling events, `gc-collect`, `database`; `dotnet-common,dotnet-sampled-thread-time` is the default pair), `--providers` extra EventPipe providers in `dotnet-trace`'s syntax without spaces, and `--buffersize` the buffer in MB (256 by default; raise it if `dotnet-trace` reports dropped events). The helper always keeps `dotnet-sampled-thread-time`, since the report is built from it. `cpu-sampling` and `thread-time` are Linux kernel profiles for `collect-linux` and are refused. The text report still ranks CPU only; for what a `gc-verbose` capture allocated, use `dotrush-profile-allocations`, which reports the same `.nettrace` with `alloc-report`. Extra events add stacks between samples, so a thread with few stack changes but a large weight (often the finalizer under `gc-verbose`) is gap time, not work. Do not enable `System.Threading.Tasks.TplEventSource` for a CPU question: the report then prints a `Warning` because task stacks are stitched across threads.
 
 5. **Compare two captures for a before/after question** — a fix, a regression, a configuration change. Capture both the same way (same workload, duration and build configuration; `trace --launch` makes that easy), then:
 
@@ -90,4 +90,4 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 - On Linux and macOS the profiler must normally run as the same user and with the same `TMPDIR` as the target process.
 - If the target is absent from `ps` or attach fails despite the correct user, check sandbox, container, PID-namespace, and diagnostic-socket boundaries. Run the target and profiler in the same boundary; do not substitute an unrelated host PID.
 - Do not upload a trace to speedscope.app or any other external service without explicit permission. Traces can expose assembly, namespace, type, and method names.
-- Use `dotrush-profile-memory` for GC heap growth or suspected managed-memory leaks.
+- Use `dotrush-profile-memory` for GC heap growth or suspected managed-memory leaks, and `dotrush-profile-allocations` for allocation volume and what allocates it.
