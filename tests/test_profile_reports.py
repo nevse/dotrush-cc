@@ -1207,6 +1207,22 @@ class AllocationTests(unittest.TestCase):
         ])
         self.assertNotIn("Callees", output)
 
+    def test_a_type_caller_that_is_sometimes_outermost_keeps_the_outermost_label(self):
+        # Only the focus row's own remainder is a tick without a managed frame; under Foo it is Foo's outermost share.
+        foo = "App!Foo()"
+        output = self.output(allocation_capture([
+            ((MAIN_FRAME, foo), "System.Byte[] (Small)", MB),
+            ((foo,), "System.Byte[] (Small)", MB),
+            ((), "System.Byte[] (Small)", MB),
+        ]), "--focus", "System.Byte[]")
+
+        self.assertEqual(section(output, "=== Callers of the focus type, 8 levels up, by allocated MB ===")[1:], [
+            "66.67%\t66.67%\t2.00\tApp!Foo()",
+            "33.33%\t33.33%\t1.00\t  (no caller: outermost managed frame)",
+            "33.33%\t33.33%\t1.00\t  App!Program.Main(...)",
+            "33.33%\t33.33%\t1.00\t[no managed frame]",
+        ])
+
     def test_a_type_named_without_its_kind_is_refused_when_several_kinds_were_allocated(self):
         result = self.report(report_capture(), "--focus", "System.Byte[]")
 

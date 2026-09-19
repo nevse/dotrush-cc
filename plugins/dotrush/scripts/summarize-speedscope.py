@@ -439,10 +439,12 @@ def focus_trees(stacks: collections.Counter[tuple[str, ...]], focus: str) -> tup
 
 class Tree:
     """How one focus tree is printed. `rest` names the part of a node's time that none of its children has, for
-    the focus function and for every function in the tree that has children, so each level adds up."""
+    the focus function and for every function in the tree that has children, so each level adds up. `root_rest`,
+    when given, names that part for the focus row alone."""
 
-    def __init__(self, rest: str, max_depth: int, limit: int, floor: float) -> None:
+    def __init__(self, rest: str, max_depth: int, limit: int, floor: float, root_rest: str | None = None) -> None:
         self.rest = rest
+        self.root_rest = root_rest or rest
         self.max_depth, self.limit, self.floor = max_depth, limit, floor
         # (depth, label, weight, whether the label is a function name)
         self.rows: list[tuple[int, str, float, bool]] = []
@@ -453,7 +455,7 @@ class Tree:
         remainder = node.weight - sum(child.weight for child in node.children.values())
         # A leaf below the focus function is all rest, which its own row already says.
         if remainder > 1e-9 and (depth == 0 or node.children):
-            entries.append((self.rest, remainder, None))
+            entries.append((self.root_rest if depth == 0 else self.rest, remainder, None))
         entries.sort(key=lambda entry: (-entry[1], entry[0]))
         shown = [entry for entry in entries[:self.limit] if entry[1] >= self.floor]
         folded = entries[len(shown):]
@@ -648,10 +650,12 @@ def print_allocation_focus(allocations: Allocations, needle: str, depth: int, li
     )
     print()
     # A type's stack starts at the type only when the tick had no managed frame, which the rankings name the same way.
-    rest = NO_MANAGED_FRAME if is_type else "(no caller: outermost managed frame)"
+    # Further up, a caller's own share is still the stacks it was the outermost frame of.
     print_tree(
         f"=== Callers of the focus {'type' if is_type else 'function'}, {depth} levels up, by allocated MB ===",
-        callers, Tree(rest, depth, limit, floor), total,
+        callers,
+        Tree("(no caller: outermost managed frame)", depth, limit, floor, NO_MANAGED_FRAME if is_type else None),
+        total,
     )
     if not is_type:
         print()
