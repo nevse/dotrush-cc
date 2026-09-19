@@ -7,7 +7,8 @@
 #   install-dotrush.sh [server|diagnostics] [TARGET_DIR] [--force]
 #
 # The component defaults to server. TARGET_DIR defaults to $DOTRUSH_SERVER_DIR for the server, else
-# <data>/<component>, where <data> is $CLAUDE_PLUGIN_DATA or ~/.cache/dotrush-cc.
+# <data>/<component>, where <data> is $CLAUDE_PLUGIN_DATA, else the plugin data dir derived from the
+# installed plugin's path (<claude>/plugins/data/<plugin>-<marketplace>), else ~/.cache/dotrush-cc.
 #
 # Env (all optional):
 #   DOTRUSH_REF    DotRush release tag or full commit SHA (default: "ref" in dotrush-version.json)

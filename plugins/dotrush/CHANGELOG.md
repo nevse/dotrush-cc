@@ -1,5 +1,22 @@
 # Changelog
 
+### 0.8.1
+- `dotrush-pick-project` saves and applies the choice through `scripts/dotrush-pick-project.sh apply <path>
+  [--no-restore]` instead of `printf ... > "$FIFO"` commands the agent filled in. The script builds the JSON from
+  its arguments, so a path with a quote, backslash or apostrophe no longer breaks the command or its JSON, and the
+  reload URI is percent-encoded. It writes the FIFO only when the session's proxy is running and the FIFO exists,
+  without blocking and without creating a file; otherwise it saves `target.json`, which the proxy applies when it
+  starts. Before, a dead proxy hung the skill's Bash call, and a redirect before the injector started left a
+  regular file at `inject.fifo`.
+- The proxy replaces a regular file it finds at its session dir's `inject.fifo` with the FIFO. Read as the FIFO,
+  such a file reached end of file on every pass and its lines went to DotRush again and again in a tight loop. A
+  `DOTRUSH_INJECT_FIFO` naming an existing file or directory that is not a FIFO is left alone and disables injection.
+- Profiles with no output dir go to `profiles/` in the plugin data dir, as documented, and no longer to
+  `~/.cache/dotrush-cc/profiles`: `CLAUDE_PLUGIN_DATA` is not set in a skill's Bash, so the dir is now derived the
+  same way as the tools' install dir.
+- The proxy reads large frames in linear time (the buffer was copied on every 64 KB read) and no longer parses
+  every server response as JSON only to build a log line it then discarded.
+
 ### 0.8.0
 - New skill `dotrush-profile-allocations` answers "what allocates": it captures a trace with `--profile gc-verbose`
   and runs `dotrush-profile.sh alloc-report <trace> [count] [--focus <function|type> [--depth N]]`, which ranks
@@ -11,12 +28,26 @@
   built from source on first use (a few minutes, `git` and a .NET SDK). `alloc-report` refuses a build without the
   format, and `tools` shows `trace-json=`.
 
+### 0.7.6
+- `dotrush-profile.sh trace-report <trace> [count] [thread-id] --focus <function> [--depth N]` replaces the thread
+  table and rankings with two trees for one function: its callers, and what it calls with its own time as
+  `(self)`. The name resolves by whole signature, then without its parameters, then by trailing `Type.Method` or
+  `Method`, then as a substring; an ambiguous name is refused with the candidates. `--depth` caps each tree (8 by
+  default), `count` caps the rows per level, and rows under 1% of the function's time are folded.
+
 ### 0.7.5
 - Claude Code processes started from one agterm tab (background jobs included) no longer share a runtime dir.
   They all inherit the tab's `AGTERM_SESSION_ID`, so their language servers overwrote each other's `pid`,
   request responses and saved rename plans, and read one injection FIFO: a request could be answered by
   another job's server. The dir is now keyed on the session id and the launching Claude Code process, and the
   tools look it up by `CLAUDE_PID`. `DOTRUSH_SESSION_ID` is still used as given.
+
+### 0.7.4
+- `trace` and `trace --launch` take `--profile`, `--providers` and `--buffersize` anywhere before `--`, so a capture
+  can add GC or allocation events (for example `gc-verbose`). `dotnet-sampled-thread-time`, which the CPU report
+  is built from, is added to any `--profile` without it, and `--providers` alone keeps the default pair.
+- With TPL task events in a trace, `AWAIT_TIME` counts as blocked time, `STARTING TASK` and `UNKNOWN_ASYNC` are no
+  longer ranked as functions, and the report and the diff warn that stacks are stitched.
 
 ### 0.7.3
 - `dotrush-profile.sh trace-diff <baseline> <current> [count] [baseline-thread current-thread]` compares two CPU

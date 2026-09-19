@@ -1785,6 +1785,13 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(data_dir(checkout, without), str(self.root / ".cache/dotrush-cc"))
         self.assertEqual(data_dir(installed, self.env), str(self.data))
 
+        # Profiles follow the tools: a skill's capture lands in the plugin data dir, not the user cache.
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1" --help >/dev/null; output_dir ""', "_", str(plugin / "scripts/dotrush-profile.sh")],
+            capture_output=True, text=True, env={k: v for k, v in without.items() if k != "DOTRUSH_PROFILE_OUTPUT_DIR"},
+        )
+        self.assertEqual(result.stdout.strip(), str(self.root / ".claude/plugins/data/dotrush-dotrush-cc/profiles"))
+
     def test_proxy_runs_the_installer_only_for_a_missing_or_stale_server(self):
         installer = self.root / "installer.sh"
         calls = self.root / "installer.calls"
@@ -1853,6 +1860,7 @@ class InstallTests(unittest.TestCase):
 
 SUMMARIZE_DIAGNOSTICS = ROOT / "plugins/dotrush/scripts/summarize-diagnostics.py"
 DIAGNOSTICS_SH = ROOT / "plugins/dotrush/scripts/dotrush-diagnostics.sh"
+PICK_PROJECT_SH = ROOT / "plugins/dotrush/scripts/dotrush-pick-project.sh"
 CLI_TOOLS = ROOT / "plugins/dotrush/tools"
 
 
@@ -2209,6 +2217,97 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no DotRush language server has started", result.stderr)
 
+    def run_pick(self, *args):
+        env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(self.root / "data"), "DOTRUSH_SESSION_ID": "test-session",
+               "DOTRUSH_CLI_DIR": str(self.cli_dir)}
+        return subprocess.run(["bash", str(PICK_PROJECT_SH), *args], capture_output=True, text=True, env=env, timeout=30)
+
+    def awkward_project(self):
+        # A quote ends a single-quoted shell literal, a double quote and a backslash break a JSON literal, and a
+        # space and a percent sign must be escaped in a file URI.
+        project = self.root / "it's \"odd\" \\ 100%" / "App.csproj"
+        project.parent.mkdir()
+        project.write_text("<Project />\n")
+        return project
+
+    def test_pick_project_sends_paths_that_would_break_shell_or_json_source(self):
+        import threading
+
+        ws = self.session(os.getpid())
+        (ws / "workspace.txt").write_text(f"{self.root / 'my ws'}\n")
+        project = self.awkward_project()
+        injected = []
+
+        def fake_proxy():
+            # Like the proxy, hold a write end so the reader sees no end of file between the two writers.
+            read_fd = os.open(ws / "inject.fifo", os.O_RDONLY | os.O_NONBLOCK)
+            held = os.open(ws / "inject.fifo", os.O_WRONLY)
+            os.set_blocking(read_fd, True)
+            with os.fdopen(read_fd) as fifo:
+                injected.extend(json.loads(fifo.readline()) for _ in range(2))
+            os.close(held)
+
+        reader = threading.Thread(target=fake_proxy, daemon=True)
+        reader.start()
+        result = self.run_pick("apply", str(project), "--no-restore")
+        reader.join(5)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = {"projectOrSolutionFiles": [str(project)], "restoreProjectsBeforeLoading": False}
+        self.assertEqual(json.loads((ws / "target.json").read_text()), target)
+        self.assertEqual(injected[0], {"method": "workspace/didChangeConfiguration",
+                                       "params": {"settings": {"dotrush": {"roslyn": target}}}})
+        self.assertEqual(injected[1]["method"], "dotrush/reloadWorkspace")
+        self.assertEqual(injected[1]["params"]["workspaceFolders"][0]["uri"], (self.root / "my ws").as_uri())
+        self.assertEqual(json.loads(self.run_pick("show").stdout), target)
+
+    def test_pick_project_sends_no_reload_before_the_first_load_completes(self):
+        import threading
+
+        ws = self.session(os.getpid())
+        (ws / "load-completed").unlink()
+        project = self.awkward_project()
+        injected = []
+
+        def fake_proxy():
+            with open(ws / "inject.fifo") as fifo:
+                injected.append(json.loads(fifo.readline()))
+
+        reader = threading.Thread(target=fake_proxy, daemon=True)
+        reader.start()
+        result = self.run_pick("apply", str(project))
+        reader.join(5)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([m["method"] for m in injected], ["workspace/didChangeConfiguration"])
+        self.assertNotIn("reload", result.stdout)
+
+    def test_pick_project_only_saves_the_choice_when_the_proxy_is_dead_or_has_no_fifo(self):
+        # Writing to a FIFO nobody reads would block, and redirecting into a missing one would leave a regular file
+        # the proxy then replays. The proxy applies target.json when it starts, so saving it is enough.
+        for case in ("dead", "no-fifo"):
+            with self.subTest(case):
+                shutil.rmtree(self.root / "data", ignore_errors=True)
+                ws = self.session(dead_pid() if case == "dead" else os.getpid())
+                if case == "no-fifo":
+                    (ws / "inject.fifo").unlink()
+                project = self.root / "App.csproj"
+                project.write_text("<Project />\n")
+
+                result = self.run_pick("apply", str(project))
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("not applied live", result.stdout)
+                self.assertEqual(json.loads((ws / "target.json").read_text())["projectOrSolutionFiles"], [str(project)])
+                self.assertEqual((ws / "inject.fifo").exists(), case == "dead")
+
+    def test_pick_project_refuses_a_relative_or_missing_path(self):
+        self.session(os.getpid())
+        for path in ("App.csproj", str(self.root / "missing.csproj")):
+            with self.subTest(path):
+                result = self.run_pick("apply", path)
+                self.assertEqual(result.returncode, 1)
+
 
 class InjectorTests(unittest.TestCase):
     def setUp(self):
@@ -2265,6 +2364,70 @@ class InjectorTests(unittest.TestCase):
         )
 
         self.assertEqual(out, ["50", "True"])
+
+    def test_a_regular_file_at_the_fifo_path_is_replaced_not_replayed(self):
+        # A redirect into the path before the injector made the FIFO leaves a regular file. Read as the FIFO, it
+        # would reach end of file on every pass and its lines would go to the server again and again.
+        out = self.run_proxy_script(
+            "import stat\n"
+            "path = os.path.join(proxy.WS_DIR, 'inject.fifo'); proxy.FIFO_PATH = path\n"
+            "os.makedirs(proxy.WS_DIR, exist_ok=True)\n"
+            "open(path, 'w').write('{\"method\":\"stale\"}\\n')\n"
+            "class Sink:\n"
+            "    def __init__(self): self.data = bytearray()\n"
+            "    def write(self, b): self.data += b\n"
+            "    def flush(self): pass\n"
+            "sink = Sink()\n"
+            "threading.Thread(target=proxy.injector, args=(sink,), daemon=True).start()\n"
+            "deadline = time.time() + 10\n"
+            "while not stat.S_ISFIFO(os.lstat(path).st_mode) and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "w = os.open(path, os.O_WRONLY); os.write(w, b'{\"method\":\"fresh\"}\\n'); os.close(w)\n"
+            "while b'fresh' not in sink.data and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "time.sleep(0.2)\n"
+            "print(stat.S_ISFIFO(os.lstat(path).st_mode))\n"
+            "print(sink.data.count(b'stale'), sink.data.count(b'fresh'))\n"
+        )
+
+        self.assertEqual(out, ["True", "0", "1"])
+
+    def test_a_non_fifo_outside_the_session_dir_is_never_deleted(self):
+        # DOTRUSH_INJECT_FIFO can point anywhere; only the plugin's own session dir is safe to clean up.
+        self.fifo.unlink()
+        self.fifo.write_text("user data\n")
+        folder = self.root / "folder"
+        (folder / "inner").mkdir(parents=True)
+        out = self.run_proxy_script(
+            "print(proxy.ensure_fifo(path))\n"
+            f"print(proxy.ensure_fifo({str(folder)!r}))\n"
+        )
+
+        self.assertEqual(out, ["False", "False"])
+        self.assertEqual(self.fifo.read_text(), "user data\n")
+        self.assertTrue((folder / "inner").is_dir())
+
+    def test_the_frame_reader_reassembles_frames_split_across_reads(self):
+        out = self.run_proxy_script(
+            "r, w = os.pipe()\n"
+            "reader = proxy.FrameReader(r)\n"
+            "big = b'{\"x\":\"' + b'a' * 200000 + b'\"}'\n"
+            "data = proxy.frame(b'{\"id\":1}') + proxy.frame(big) + proxy.frame(b'{}')\n"
+            "def feed():\n"
+            "    for i in range(0, len(data), 7000):\n"
+            "        os.write(w, data[i:i + 7000])\n"
+            "    os.close(w)\n"
+            "threading.Thread(target=feed, daemon=True).start()\n"
+            "frames = []\n"
+            "while True:\n"
+            "    f = reader.read_frame()\n"
+            "    if f is None: break\n"
+            "    frames.append(f)\n"
+            "print(len(frames), frames[1][1] == big, frames[0][1], frames[2][1])\n"
+            "print(all(type(h) is bytes and type(b) is bytes for h, b in frames))\n"
+        )
+
+        self.assertEqual(out, ["3", "True", "b'{\"id\":1}'", "b'{}'", "True"])
 
     def test_a_deeply_nested_line_is_skipped_and_later_lines_still_go_through(self):
         # Python 3.9's json.loads raises RecursionError on deep nesting (3.14 parses it), so fake that here.
