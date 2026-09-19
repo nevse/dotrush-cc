@@ -29,3 +29,10 @@ dotrush-profiles/
 # OS / editor
 .DS_Store
 *.swp
+
+# Local Claude Code settings and worktrees (the rules in .claude/rules/ are committed)
+.claude/settings.local.json
+.claude/worktrees/
+
+# revmux run archives (the project profile in .revmux/profile.md is committed)
+.revmux/tasks/
