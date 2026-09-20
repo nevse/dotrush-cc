@@ -1,5 +1,15 @@
 # Changelog
 
+### 0.8.2
+- The three profiling skills say how to look at a capture as a flame graph without uploading it. DotRush's VS
+  Code extension already registers the viewers, and the helper's artifacts match their file-name patterns:
+  `*.speedscope.json` and `*.nettrace.json` open in its `dotrush.traceView`, `*.gcdump.json` in its
+  `dotrush.memoryView`. Without VS Code, `npx speedscope <file>` renders the same viewer from a local page. The
+  CPU skill also says how to read one: pick the working thread first, Left Heavy for where the time went and
+  Time Order for when, `CPU_TIME` as the sampler's leaf marker, and block width as sampled time on stack rather
+  than the duration of one call. Before, the skills only forbade uploading a trace and named no local viewer, so
+  the flame graph had to be improvised each time.
+
 ### 0.8.1
 - `dotrush-pick-project` saves and applies the choice through `scripts/dotrush-pick-project.sh apply <path>
   [--no-restore]` instead of `printf ... > "$FIFO"` commands the agent filled in. The script builds the JSON from
