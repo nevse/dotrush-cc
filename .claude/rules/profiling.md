@@ -13,7 +13,7 @@ paths:
 - Durations are `hh:mm:ss` or `dd:hh:mm:ss` with every field in range: `dotnet-trace` parses `--duration` with
   `TimeSpan.Parse`, which reads `00:30` as 30 minutes and `24:00:00` as 24 days.
 - Artifacts never default into the user's repository: explicit dir, else `$DOTRUSH_PROFILE_OUTPUT_DIR`, else
-  `${CLAUDE_PLUGIN_DATA}/profiles`, else the user cache.
+  `$(dotrush_data_dir)/profiles` (never `CLAUDE_PLUGIN_DATA` directly, see `install.md`).
 - `dotnet-gcdump` forces a full gen-2 GC. The memory skill keeps an explicit impact check before attaching to a
   production or latency-sensitive process, and no skill uploads artifacts anywhere.
 - A report that needs `--format Json` (`heap-report`, `heap-diff`, `alloc-report`) refuses a pinned build without

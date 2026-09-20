@@ -26,10 +26,10 @@ LSP restarts, so within a session it's asked only once.
    - If it exits 1 (`no DotRush language server has started in this session`), the C# LSP server hasn't
      started for this session yet. Ask the user to trigger it (open any `.cs` file, or run any C# LSP action)
      and re-run this skill.
-   - `FIFO="$WSDIR/inject.fifo"`; persisted choice = `"$WSDIR/target.json"`.
+   - The persisted choice is `"$WSDIR/target.json"`.
 
-2. **Don't re-ask if already configured**: if `"$WSDIR/target.json"` exists, read it and report the current
-   target. Only continue if the user explicitly wants to change it.
+2. **Don't re-ask if already configured**: run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-pick-project.sh" show`;
+   if it prints a target, report it. Only continue if the user explicitly wants to change it.
 
 3. **Discover candidates** with Glob, relative to the user's working directory, solutions first:
    `**/*.slnx`, then `**/*.sln`, then `**/*.csproj`. Dedupe, keep absolute paths, cap ~10.
@@ -40,30 +40,28 @@ LSP restarts, so within a session it's asked only once.
    discovered candidates (basename + parent folder). The user can pick "Other" to type an absolute path. Never
    guess between candidates.
 
-   Also decide `<RESTORE>` for steps 5-6: `true` by default; `false` when the projects are already restored
-   (a built checkout) or a NuGet feed is unreachable (restores fail slowly with `NU1900` and similar), or when
-   an instruction says so.
+   Also decide whether to restore: yes by default; no when the projects are already restored (a built
+   checkout) or a NuGet feed is unreachable (restores fail slowly with `NU1900` and similar), or when an
+   instruction says so.
 
-5. **Persist the choice** to `"$WSDIR/target.json"`, using the chosen absolute path and `<RESTORE>`:
+5. **Save and apply it** with the script, passing the chosen absolute path as one single-quoted argument (write
+   an apostrophe inside it as `'\''`), plus `--no-restore` when step 4 decided against restoring:
    ```bash
-   printf '%s\n' '{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":<RESTORE>}' > "$WSDIR/target.json"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-pick-project.sh" apply '<ABS_PATH>' [--no-restore]
    ```
+   Never write `target.json` or the FIFO by hand: the script builds the JSON from its arguments, so no path is
+   pasted into shell or JSON source, and it writes the FIFO without blocking and without creating a file there.
+   What it prints decides the next step:
+   - It prints `not applied live`: the language server for this session is not running yet (it may still be installing).
+     The choice is saved and loads when the server starts; tell the user that and skip step 6.
+   - It prints `applied: configuration sent`: the running server got the configuration. The script also sends
+     `dotrush/reloadWorkspace` (`workspace reload sent`), but only when `"$WSDIR/load-completed"` exists.
+     Without that file DotRush has not loaded a project yet: its initialization is waiting for the configuration
+     and loads the project itself as soon as it arrives, and a reload then would race that load (code analysis
+     never starts, or every diagnostic appears twice). With the file, the server needs the reload to switch.
+   - It exits 1 with an error: report it; the path was not absolute or does not exist, or the FIFO write failed.
 
-6. **Apply it live now** (no restart) via this workspace's FIFO. Always send the configuration:
-   ```bash
-   printf '%s\n' '{"method":"workspace/didChangeConfiguration","params":{"settings":{"dotrush":{"roslyn":{"projectOrSolutionFiles":["<ABS_PATH>"],"restoreProjectsBeforeLoading":<RESTORE>}}}}}' > "$FIFO"
-   ```
-   Then send a reload **only if `"$WSDIR/load-completed"` exists**:
-   ```bash
-   [ -f "$WSDIR/load-completed" ] && printf '%s\n' '{"method":"dotrush/reloadWorkspace","params":{"workspaceFolders":[{"uri":"file://<WORKDIR>","name":"ws"}]}}' > "$FIFO"
-   ```
-   Without that file DotRush has not loaded a project yet: its initialization is waiting for the configuration
-   and loads the project itself as soon as it arrives. A reload at that point races the initial load: DotRush then
-   either never starts code analysis (diagnostics stay silent until a restart) or loads the project twice and
-   reports every diagnostic twice.
-   With the file, the server is already initialized and needs the reload to switch projects.
-
-7. **Verify** — wait a few seconds (large solutions take longer), then run an LSP `documentSymbol` on a
+6. **Verify** — wait a few seconds (large solutions take longer), then run an LSP `documentSymbol` on a
    `.cs` file from the chosen project. Symbols back → success. Still empty → `tail -n 30 "$WSDIR/proxy.log"`
    and look for `projectLoaded` / errors.
 

@@ -17,7 +17,7 @@ DotRush LSP stdio proxy (man-in-the-middle) for the `dotrush` Claude Code plugin
 - Auto-installs the DotRush server on first run if it is missing.
 
 Control channel (newline-delimited JSON, one JSON-RPC message per line):
-    echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$DOTRUSH_INJECT_FIFO"
+    echo '{"method":"dotrush/solutionDiagnostics","params":{}}' > "$(scripts/dotrush-cli.sh session --dir)/inject.fifo"
 The injector opens the FIFO once and holds a write end of its own, so writers may come and go; write each
 line with a single write.
 
@@ -26,7 +26,11 @@ Env (set by the plugin's .lsp.json; all optional with sensible fallbacks):
     DOTRUSH_SERVER_DIR      dir the server lives in / is installed to
     DOTRUSH_INSTALL_SCRIPT  installer to run if the server is missing or not at the pinned ref
     DOTRUSH_REF             DotRush ref to require (default: "ref" in dotrush-version.json)
-    DOTRUSH_INJECT_FIFO     control FIFO path
+    DOTRUSH_DATA_DIR        plugin data dir; per-workspace session dirs live under it
+    DOTRUSH_WORKSPACE       workspace root, used to key the session dir when no session id is known
+    DOTRUSH_INJECT_FIFO     control FIFO path (default: <WS_DIR>/inject.fifo)
+    DOTRUSH_TARGET_FILE     persisted project choice (default: <WS_DIR>/target.json)
+    DOTRUSH_DIAGNOSTICS_FILE  diagnostics mirror (default: <WS_DIR>/diagnostics.json)
     DOTRUSH_PROXY_LOG       log file path (empty string disables logging)
     DOTRUSH_SESSION_ID      explicit per-session key (overrides AGTERM_SESSION_ID + parent pid discovery)
 """
@@ -35,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -119,7 +124,8 @@ class FrameReader:
 
     def __init__(self, fd):
         self.fd = fd
-        self.buf = b""
+        # A bytearray grows in place; appending to bytes copies the whole buffer on every read.
+        self.buf = bytearray()
 
     def _fill(self):
         chunk = os.read(self.fd, 65536)
@@ -132,17 +138,18 @@ class FrameReader:
         while b"\r\n\r\n" not in self.buf:
             if not self._fill():
                 return None
-        head, rest = self.buf.split(b"\r\n\r\n", 1)
+        end = self.buf.index(b"\r\n\r\n")
+        head = bytes(self.buf[:end])
+        del self.buf[:end + 4]
         length = 0
         for line in head.split(b"\r\n"):
             if line.lower().startswith(b"content-length:"):
                 length = int(line.split(b":", 1)[1].strip())
-        self.buf = rest
         while len(self.buf) < length:
             if not self._fill():
                 return None
-        body = self.buf[:length]
-        self.buf = self.buf[length:]
+        body = bytes(self.buf[:length])
+        del self.buf[:length]
         return head + b"\r\n\r\n", body
 
 
@@ -256,11 +263,13 @@ def pump_server_to_client(child_stdout, diagnostics=None):
         # The substring test keeps large responses from being parsed a second time.
         if diagnostics is not None and b'"textDocument/publishDiagnostics"' in body:
             diagnostics.record_frame(body)
-        b = brief(body)
-        if b == "notif    dotrush/loadCompleted":
-            mark_load_completed()
-        if not b.startswith("response"):
-            log(f"S->C {b}")
+        # Only frames with a method are logged, so a response is never parsed here at all.
+        if b'"method"' in body:
+            b = brief(body)
+            if b == "notif    dotrush/loadCompleted":
+                mark_load_completed()
+            if not b.startswith("response"):
+                log(f"S->C {b}")
 
 
 def write_atomically(path, data):
@@ -334,11 +343,36 @@ def open_fifo_for_reading(path):
         raise
 
 
+def ensure_fifo(path):
+    """Create the FIFO at path; False when something else is there and must stay.
+
+    A writer that redirects into the path before the FIFO exists creates a regular file. Read as a FIFO, that file
+    reaches end of file after every pass, so the injector would replay its lines to the server in a tight loop.
+    Such a file is removed only inside the session dir, which the plugin owns; a DOTRUSH_INJECT_FIFO pointing at an
+    existing file or directory elsewhere is refused rather than deleted.
+    """
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not stat.S_ISFIFO(mode):
+        in_session_dir = os.path.dirname(os.path.abspath(path)) == os.path.abspath(WS_DIR)
+        if not stat.S_ISREG(mode) or not in_session_dir:
+            log(f"not a FIFO, left in place: {path}; injection is disabled")
+            return False
+        log(f"replacing regular file at {path}")
+        os.unlink(path)
+        mode = None
+    if mode is None:
+        os.mkfifo(path)
+    return True
+
+
 def injector(child_stdin):
     try:
         os.makedirs(os.path.dirname(FIFO_PATH), exist_ok=True)
-        if not os.path.exists(FIFO_PATH):
-            os.mkfifo(FIFO_PATH)
+        if not ensure_fifo(FIFO_PATH):
+            return
     except OSError as e:
         log(f"cannot create FIFO {FIFO_PATH}: {e}")
         return

@@ -3,6 +3,7 @@ paths:
   - "plugins/dotrush/bin/**"
   - "plugins/dotrush/.lsp.json"
   - "plugins/dotrush/scripts/dotrush-diagnostics.sh"
+  - "plugins/dotrush/scripts/dotrush-pick-project.sh"
   - "plugins/dotrush/scripts/summarize-diagnostics.py"
   - "plugins/dotrush/skills/dotrush-diagnostics/**"
   - "plugins/dotrush/skills/dotrush-pick-project/**"
@@ -28,5 +29,7 @@ paths:
   a new file names that case (`older proxy`) instead of failing.
 - DotRush signals no end of analysis. `dotrush-diagnostics.sh solution` waits for the publish count to move, then
   for quiet, and exit 3 means nothing arrived, which includes a clean solution.
+- Every FIFO writer checks the proxy's pid and opens with `O_NONBLOCK` and no `O_CREAT`: a plain `> "$FIFO"`
+  blocks on a dead proxy, and before the injector starts it creates a regular file there.
 - Tests: `InjectorTests` and `DiagnosticsTests` in `tests/test_profile_reports.py`; the channel end to end in
   `tests/DotRushCli.Tests/E2E`.
