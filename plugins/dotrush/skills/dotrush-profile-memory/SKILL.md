@@ -35,7 +35,7 @@ Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report ar
 
    The helper prints `GCDUMP=`, `GCDUMP_JSON=` and `REPORT=` lines with absolute paths. Read the report. For a different row count, run `heap-report <SNAPSHOT.gcdump> 50`; it prints the report, converting a `.gcdump` that has no `.gcdump.json` yet.
 
-   To browse the heap graph instead of the ranked report, open the `.gcdump.json` locally, never by uploading it: DotRush's VS Code extension opens it by double-click in its `dotrush.memoryView`. Confirm the viewer came up before saying that it did. The report and `heap-diff` remain the evidence to quote; a viewer is for looking around.
+   To browse the heap graph instead of the ranked report, open the `.gcdump.json` locally, never by uploading it: DotRush's VS Code extension opens it by double-click in its `dotrush.memoryView`. Confirm the viewer came up before saying that it did. Outside VS Code there is no equivalent to reach for: that view is the `memoryviewer` package, a web app with no command of its own, so do not go looking for one or invent a command line for it — without VS Code the ranked report and `heap-diff` are the whole story. They are the evidence to quote in any case; a viewer is for looking around.
 
 3. For suspected growth or a leak, prefer two snapshots of the same process:
 
