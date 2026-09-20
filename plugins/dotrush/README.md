@@ -177,8 +177,11 @@ seconds) and `24:00:00` is `dd:hh:mm` (24 days, not one). For a day or more, use
 explicit impact check before attaching to production or another latency-sensitive process. No skill uploads
 profiling artifacts to external viewers. To look at a capture instead of its report, open it locally: the
 artifacts already match the file-name patterns DotRush's VS Code extension registers, so `*.speedscope.json`
-and `*.nettrace.json` open by double-click in its trace view and `*.gcdump.json` in its memory view. Without
-VS Code, `npx speedscope <file>` renders the same viewer from a self-contained local page.
+and `*.nettrace.json` open by double-click in its trace view, as flame graphs, and `*.gcdump.json` in its
+memory view, as a heap-graph browser. Without VS Code, `npx speedscope <TRACE.speedscope.json>` renders that
+trace viewer from a self-contained local page, and the same for a `.nettrace.json`. A `.gcdump.json` has no
+such fallback: the memory view is a web app with no command of its own, so the ranked report is the whole of
+it outside VS Code.
 
 ## Solution diagnostics
 

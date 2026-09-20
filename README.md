@@ -128,9 +128,11 @@ P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   #
 "$P/scripts/dotrush-profile.sh" heap-diff base.gcdump current.gcdump 30
 ```
 
-The artifacts open locally as flame graphs, and nothing is uploaded: their names already match the viewers
-DotRush's VS Code extension registers, so `*.speedscope.json` and `*.nettrace.json` open by double-click in its
-trace view and `*.gcdump.json` in its memory view. Without VS Code, `npx speedscope <file>` shows the same viewer.
+The artifacts open locally, and nothing is uploaded: their names already match the viewers DotRush's VS Code
+extension registers, so `*.speedscope.json` and `*.nettrace.json` open by double-click in its trace view, as
+flame graphs, and `*.gcdump.json` in its memory view, as a heap-graph browser. Without VS Code,
+`npx speedscope <TRACE.speedscope.json>` shows that trace viewer, and the same for a `.nettrace.json`; a
+`.gcdump.json` has no command-line viewer at all, only its report.
 
 **Check the whole solution for compiler errors** without building:
 
