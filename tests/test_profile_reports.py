@@ -2158,7 +2158,7 @@ class DiagnosticsTests(unittest.TestCase):
         ])
         self.assertIn("... 1 more; pass a larger count", result.stdout)
 
-    def test_summary_merges_the_copies_of_a_multi_targeted_project_and_keeps_true_duplicates(self):
+    def test_summary_merges_copies_across_frameworks_and_projects_and_keeps_true_duplicates(self):
         store = self.root / "diagnostics.json"
 
         def sourced(source, *args):
@@ -2166,8 +2166,9 @@ class DiagnosticsTests(unittest.TestCase):
 
         self.write_store(store, {
             (self.root / "Core/A.cs").as_uri(): [
-                sourced("Core(net10.0)", 3, 4, 1, "CS0029", "bad"),
+                # Published net11.0 first; the label is sorted either way.
                 sourced("Core(net11.0)", 3, 4, 1, "CS0029", "bad"),
+                sourced("Core(net10.0)", 3, 4, 1, "CS0029", "bad"),
                 # Only one framework reports this one, so it carries no framework list.
                 sourced("Core(net11.0)", 7, 0, 2, "CS0618", "obsolete"),
             ],
@@ -2176,16 +2177,23 @@ class DiagnosticsTests(unittest.TestCase):
                 sourced("App", 1, 0, 1, "CS0103", "missing"),
                 sourced("App", 1, 0, 1, "CS0103", "missing"),
             ],
+            # A file several projects compile, such as a package's Program.cs shared by every test project.
+            "file:///packages/Program.cs": [
+                sourced("Tests", 1, 0, 2, "CS8321", "unused"),
+                sourced("Core.Tests(net10.0)", 1, 0, 2, "CS8321", "unused"),
+                sourced("Core.Tests(net11.0)", 1, 0, 2, "CS8321", "unused"),
+            ],
         })
 
         result = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--root", str(self.root)],
                                 capture_output=True, text=True, check=True)
 
-        self.assertIn("Files: 2  Errors: 3  Warnings: 1", result.stdout)
+        self.assertIn("Files: 3  Errors: 3  Warnings: 2", result.stdout)
         self.assertEqual(section(result.stdout, "Diagnostics (errors first):"), [
             "  App/B.cs:2:1  error  CS0103  missing",
             "  App/B.cs:2:1  error  CS0103  missing",
             "  Core/A.cs:4:5  error  CS0029  bad [net10.0, net11.0]",
+            "  /packages/Program.cs:2:1  warning  CS8321  unused [Core.Tests(net10.0, net11.0), Tests]",
             "  Core/A.cs:8:1  warning  CS0618  obsolete",
         ])
 

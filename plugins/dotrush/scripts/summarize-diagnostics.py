@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 SEVERITIES = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 NO_PUBLISH_EXIT = 3
-# DotRush names the source of a multi-targeted project's diagnostic "Project(net10.0)", one per target framework.
+# A diagnostic's source is its project, "Project(net10.0)" for each target framework of a multi-targeted one.
 TARGETED_SOURCE = re.compile(r"^(.*)\(([^()]+)\)$")
 
 
@@ -63,23 +63,37 @@ def code_of(diagnostic):
     return "-" if code is None or code == "" else str(code)
 
 
-def merge_target_frameworks(diagnostics):
-    """One (diagnostic, frameworks) per diagnostic, the copies a multi-targeted project reports per framework merged.
+def sources_label(sources):
+    """How the sources of one merged diagnostic read after its message, sorted: the frameworks when one project
+    reports it per framework, else each project, with its frameworks when it has several."""
+    frameworks = {}
+    for source in sources:
+        match = TARGETED_SOURCE.match(source or "")
+        project, framework = (match.group(1), match.group(2)) if match else (source or "?", None)
+        frameworks.setdefault(project, [])
+        if framework:
+            frameworks[project].append(framework)
+    if len(frameworks) == 1:
+        return ", ".join(sorted(next(iter(frameworks.values()))))
+    return ", ".join(f"{p}({', '.join(sorted(f))})" if f else p for p, f in sorted(frameworks.items()))
 
-    A copy repeated for the same framework stays separate: that is DotRush reporting it twice."""
+
+def merge_sources(diagnostics):
+    """One (diagnostic, label) per diagnostic: the copies that several projects, or one project per target framework,
+    report for the same file merged, with the label naming them.
+
+    A copy repeated by the same source stays separate: that is DotRush reporting it twice."""
     groups = {}
     for d in diagnostics:
-        match = TARGETED_SOURCE.match(d.get("source") or "")
-        project, framework = (match.group(1), match.group(2)) if match else (d.get("source"), None)
         start = (d.get("range") or {}).get("start") or {}
-        key = (d.get("severity"), start.get("line"), start.get("character"), code_of(d), d.get("message"), project)
-        groups.setdefault(key, (d, []))[1].append(framework)
+        key = (d.get("severity"), start.get("line"), start.get("character"), code_of(d), d.get("message"))
+        groups.setdefault(key, (d, []))[1].append(d.get("source"))
     merged = []
-    for d, frameworks in groups.values():
-        distinct = list(dict.fromkeys(frameworks))
-        copies = max(frameworks.count(f) for f in distinct)
-        labels = distinct if len(distinct) > 1 else []
-        merged.extend((d, labels) for _ in range(copies))
+    for d, sources in groups.values():
+        distinct = list(dict.fromkeys(sources))
+        copies = max(sources.count(s) for s in distinct)
+        label = sources_label(distinct) if len(distinct) > 1 else ""
+        merged.extend((d, label) for _ in range(copies))
     return merged
 
 
@@ -87,7 +101,7 @@ def report(data, root, count, hints=False):
     rows = []
     for uri, diagnostics in data["files"].items():
         path = display_path(uri, root)
-        for d, frameworks in merge_target_frameworks(diagnostics):
+        for d, label in merge_sources(diagnostics):
             start = (d.get("range") or {}).get("start") or {}
             message = (d.get("message") or "").strip().splitlines()[0] if d.get("message") else ""
             rows.append((
@@ -96,7 +110,7 @@ def report(data, root, count, hints=False):
                 start.get("line", 0) + 1,
                 start.get("character", 0) + 1,
                 code_of(d),
-                f"{message} [{', '.join(frameworks)}]" if frameworks else message,
+                f"{message} [{label}]" if label else message,
             ))
     rows.sort()
 

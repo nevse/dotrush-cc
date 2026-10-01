@@ -20,6 +20,7 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    - `no DotRush language server has started` — run any C# LSP operation first (for example `documentSymbol` on a `.cs` file in the project), then retry.
    - `load: not completed` — DotRush has not finished its first project load, and it starts code analysis only after that; `solution` refuses to run. If a project was just chosen, wait for the load and re-check. If the project was switched with a `dotrush/reloadWorkspace` before any load completed, analysis will not start in this server: tell the user to restart Claude Code.
    - `load: completed with no project` — no project was chosen, and DotRush found no single solution or project in the workspace to load on its own, so `solution` refuses to run. Run the `dotrush-pick-project` skill, then re-check.
+   - `load: completed (N projects)` — ready; N is how many projects DotRush loaded. A proxy from before 0.8.7 prints `load: completed` without the count.
    - `target: none chosen` — normal when the workspace holds a single solution (or a single project) or a `dotrush.config.json`: DotRush loads that on its own. The `load:` line says whether it did.
    - `publishes: no capture (older proxy)` — the language server started before the plugin was updated. Tell the user to restart Claude Code; do not try to work around it.
    - `channel: unavailable (older proxy)` — the proxy predates the request channel that plugin tools such as rename use. Diagnostics do not need it, so `solution` and `report` still work; mention a Claude Code restart only if the user also wants those tools.
@@ -36,11 +37,12 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 
 3. Read the output:
 
-   - Claude Code may also show a `new-diagnostics` block after the run. It lists only diagnostics it has not shown before (so files already reported are missing from it) and includes the hints. Report from this script's output, which is the complete current set.
-   - A diagnostic followed by `[net10.0, net11.0]` comes from a project built for several target frameworks; it is listed and counted once. That is normal, not a duplicate.
-   - If every diagnostic appears exactly twice with no framework list, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
-   - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
+   - Claude Code may also show a `new-diagnostics` block after the run. It holds only errors and warnings it has not shown before (so files already reported are missing from it), at most 30, and a multi-targeted project's error appears there once per framework. Report from this script's output, which is the complete current set.
+   - A diagnostic followed by a bracketed list was reported by several sources and is listed and counted once: `[net10.0, net11.0]` means one project built for several target frameworks, `[Core.Tests(net10.0, net11.0), Tests]` means a file several projects compile, such as a package's `Program.cs`. That is normal, not a duplicate.
+   - If every diagnostic appears exactly twice as two identical rows, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
+   - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `Publishes:` is the server's running total of `publishDiagnostics` since it started, not a per-run figure; it only shows that results arrived. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
    - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` to the summarizer only when the user asks for them (see step 4).
+   - **Exit status 0** means the run finished and reported, errors or not; it is a report, not a pass/fail check. Read `Errors:` for that.
    - **Exit status 3** means nothing was published before the timeout. DotRush publishes only files that have diagnostics or that just lost them, so this is what a clean solution looks like on a first run — but it is also what a still-running or cancelled analysis looks like. Say both, and suggest a larger timeout for a big solution before calling it clean.
 
 4. To re-read the last results without analyzing again, or to list more rows or the hints:

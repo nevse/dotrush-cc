@@ -416,6 +416,19 @@ public sealed class SessionTests : IDisposable
         Assert.Equal((0, dir, ""), (exit, session?.Dir, stderr));
     }
 
+    [Theory]
+    [InlineData(1, "load: completed (1 project)")]
+    [InlineData(8, "load: completed (8 projects)")]
+    public void Session_counts_the_projects_a_completed_load_found(int projects, string expected)
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, ProjectsLoaded: projects));
+
+        var (exit, stdout, _) = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal(0, exit);
+        Assert.Contains(expected + "\n", stdout);
+    }
+
     [Fact]
     public void Session_says_when_a_completed_load_found_no_project()
     {
