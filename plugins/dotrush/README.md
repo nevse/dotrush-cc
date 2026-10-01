@@ -219,8 +219,11 @@ What to expect:
 - Hints are counted but not listed; `summarize-diagnostics.py --hints` lists them. `Files:` counts every file with a
   diagnostic, hints included.
 - A project with several target frameworks reports a diagnostic once per framework (its source reads
-  `Core(net10.0)`, `Core(net11.0)`). The summary lists it once with the frameworks after the message,
-  `bad [net10.0, net11.0]`, and counts it once.
+  `Core(net10.0)`, `Core(net11.0)`), and a file several projects compile (a package's `Program.cs` in every test
+  project) once per project. The summary lists each such diagnostic once with its sources after the message,
+  `bad [net10.0, net11.0]` or `unused [Core.Tests(net10.0, net11.0), Tests]`, and counts it once.
+- `solution` exits 0 whenever it reports, errors included; `Errors:` is the pass/fail figure. `Publishes:` is the
+  server's running total, not the count for this run.
 - DotRush publishes only files with diagnostics or that just lost them, so a clean solution publishes nothing and
   `solution` exits 3 after `DOTRUSH_DIAGNOSTICS_TIMEOUT` (default 300 s) — as does an analysis still running.
 - Any later analysis replaces the set: once Claude Code opens or edits a file, DotRush re-analyzes that document

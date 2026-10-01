@@ -89,7 +89,9 @@ public static class SessionCommand
         stdout.WriteLine(session.IsProxyRunning ? $"proxy: running (pid {session.Pid})" : "proxy: not running");
         stdout.WriteLine(
             session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
-            : session.LoadCompleted ? "load: completed"
+            : session.LoadCompleted
+                ? session.ProjectsLoaded is { } projects
+                    ? $"load: completed ({projects} project{(projects == 1 ? "" : "s")})" : "load: completed"
             : "load: not completed (no project loaded yet, or still loading)");
         stdout.WriteLine($"target: {session.Target ?? "none chosen"}");
         stdout.WriteLine(session.CapturesDiagnostics

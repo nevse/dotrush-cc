@@ -1,5 +1,16 @@
 # Changelog
 
+### 0.8.7
+- The diagnostics summary also merges a diagnostic that several projects report for one file, such as the
+  `Microsoft.NET.Test.Sdk` `Program.cs` every test project compiles, and names them after the message
+  (`[Core.Tests(net10.0, net11.0), Tests]`). It was listed once per project, unlabelled, which read like the double
+  load the `dotrush-diagnostics` skill warns about.
+- `dotrush-diagnostics.sh where` (and `dotrush-cli.sh session`) print how many projects DotRush loaded:
+  `load: completed (8 projects)`. With no project chosen, that is the only sign of what DotRush found on its own.
+- The `dotrush-diagnostics` skill says that `solution` exits 0 with errors too, that `Publishes:` is a running
+  total, and that Claude Code's `new-diagnostics` block lists a multi-targeted project's error once per framework.
+  It no longer says that block includes hints, which the proxy stopped forwarding in 0.8.3.
+
 ### 0.8.6
 - The diagnostics summary lists a diagnostic once when a multi-targeted project reports it per framework, with the
   frameworks after the message (`bad [net10.0, net11.0]`), and counts it once. Before, each copy was listed and
