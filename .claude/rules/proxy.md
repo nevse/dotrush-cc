@@ -27,6 +27,9 @@ paths:
   dropped and logged.
 - A proxy that predates a session-dir file is still running for users until they restart Claude Code. A reader of
   a new file names that case (`older proxy`) instead of failing.
+- Claude Code is shown only the errors and warnings of a publish (`FORWARDED_SEVERITIES`); `diagnostics.json`
+  keeps every severity. A publish with nothing to drop is forwarded byte for byte. Claude Code filters no severity
+  itself (2.1.286: every severity, 10 per file, 30 per turn), so dropping the filter brings back IDE-style noise.
 - DotRush signals no end of analysis. `dotrush-diagnostics.sh solution` waits for the publish count to move, then
   for quiet, and exit 3 means nothing arrived, which includes a clean solution.
 - Every FIFO writer checks the proxy's pid and opens with `O_NONBLOCK` and no `O_CREAT`: a plain `> "$FIFO"`

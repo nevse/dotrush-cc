@@ -191,9 +191,14 @@ counts by severity, the most frequent codes, and the errors and warnings with th
 
 DotRush sends analysis results only as `textDocument/publishDiagnostics` notifications to the client. Claude Code
 does show the model newly published diagnostics, including for files it never opened, but only the ones it has not
-shown before, hints included, and with no sign of when the analysis finished. So the proxy mirrors every publish
-into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of the last one.
-That file is the complete current set the skill reports from. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
+shown before, at most 10 per file and 30 in all, and with no sign of when the analysis finished. So the proxy mirrors
+every publish into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of
+the last one. That file is the complete current set the skill reports from.
+
+What the proxy forwards to Claude Code is only the errors and warnings of each publish (and any diagnostic without a
+severity, which Claude Code takes for an error). Claude Code filters no severity itself, so style suggestions such as
+IDE0058 or IDE0130 used to arrive after every LSP call on files Claude had only read, and could use up those 30 slots
+before another file's errors. Info and hint diagnostics stay in `diagnostics.json`. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
 count moves and publishing has been quiet for two seconds, because DotRush signals no completion.
 
 ```bash
@@ -319,7 +324,7 @@ notification: a line is lost only if the proxy exits before reading it, and then
 
 | Method | Params | Effect |
 |--------|--------|--------|
-| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics`; Claude Code surfaces the ones it has not shown yet, and the proxy captures all of them in `diagnostics.json` (see [Solution diagnostics](#solution-diagnostics)) |
+| `dotrush/solutionDiagnostics` | `{}` | analyze the whole solution → burst of `textDocument/publishDiagnostics`; Claude Code surfaces the errors and warnings it has not shown yet, and the proxy captures all of them in `diagnostics.json` (see [Solution diagnostics](#solution-diagnostics)) |
 | `dotrush/documentDiagnostics` | `DidOpenTextDocumentParams` | analyze a single document |
 | `dotrush/reloadWorkspace` | `{"workspaceFolders":[{"uri","name"}]}` | clear caches, re-run project load |
 | `workspace/didChangeConfiguration` | `{"settings":{"dotrush":{"roslyn":{…}}}}` | replace the roslyn config (see live reload) |

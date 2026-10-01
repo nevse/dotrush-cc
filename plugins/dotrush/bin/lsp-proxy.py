@@ -13,7 +13,8 @@ DotRush LSP stdio proxy (man-in-the-middle) for the `dotrush` Claude Code plugin
   without them reaching Claude Code. responses/ is created empty at startup and its
   presence marks a proxy that has the channel; edits/ (saved rename plans) is removed,
   because plans describe files as the server that is ending saw them.
-- Mirrors published diagnostics into <WS_DIR>/diagnostics.json.
+- Mirrors published diagnostics into <WS_DIR>/diagnostics.json, and forwards only their errors and
+  warnings to Claude Code (see FORWARDED_SEVERITIES).
 - Auto-installs the DotRush server on first run if it is missing.
 
 Control channel (newline-delimited JSON, one JSON-RPC message per line):
@@ -187,18 +188,7 @@ class DiagnosticsStore:
         self.dirty = False
         self.cond = threading.Condition()
 
-    def record_frame(self, body):
-        try:
-            msg = json.loads(body)
-        except ValueError:
-            return
-        if not isinstance(msg, dict) or msg.get("method") != "textDocument/publishDiagnostics":
-            return
-        params = msg.get("params") or {}
-        uri = params.get("uri")
-        if not isinstance(uri, str):
-            return
-        diagnostics = params.get("diagnostics") or []
+    def record(self, uri, diagnostics):
         with self.cond:
             if diagnostics:
                 self.files[uri] = diagnostics
@@ -248,6 +238,38 @@ def pump_client_to_server(child_stdin):
             child_stdin.flush()
 
 
+# What Claude Code is shown of a publish: errors, warnings and diagnostics without a severity, which it
+# takes for errors. It attaches every severity to the next turn, capped at 10 per file and 30 in all, so
+# Info and Hint (style rules such as IDE0058 on files Claude only read) cost context and can use up the
+# cap before another file's errors. The mirror keeps every severity for the `dotrush-diagnostics` skill.
+FORWARDED_SEVERITIES = (1, 2, None)
+
+
+def publish_diagnostics(header, body, diagnostics=None):
+    """Records a publishDiagnostics frame in the mirror; returns the frame to forward without Info and Hint.
+
+    Any other frame, and a publish with nothing to drop, comes back as it was."""
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return header, body
+    if not isinstance(msg, dict) or msg.get("method") != "textDocument/publishDiagnostics":
+        return header, body
+    params = msg.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("uri"), str):
+        return header, body
+    published = params.get("diagnostics")
+    published = published if isinstance(published, list) else []
+    if diagnostics is not None:
+        diagnostics.record(params["uri"], published)
+    kept = [d for d in published if not isinstance(d, dict) or d.get("severity") in FORWARDED_SEVERITIES]
+    if len(kept) == len(published):
+        return header, body
+    params["diagnostics"] = kept
+    body = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return frame(body)[:-len(body)], body
+
+
 def pump_server_to_client(child_stdout, diagnostics=None):
     reader = FrameReader(child_stdout.fileno())
     while True:
@@ -259,10 +281,10 @@ def pump_server_to_client(child_stdout, diagnostics=None):
         # The substring test keeps every other frame from being parsed here.
         if RESPONSE_ID_MARKER in body and route_response(body):
             continue
-        os.write(1, header + body)
         # The substring test keeps large responses from being parsed a second time.
-        if diagnostics is not None and b'"textDocument/publishDiagnostics"' in body:
-            diagnostics.record_frame(body)
+        if b'"textDocument/publishDiagnostics"' in body:
+            header, body = publish_diagnostics(header, body, diagnostics)
+        os.write(1, header + body)
         # Only frames with a method are logged, so a response is never parsed here at all.
         if b'"method"' in body:
             b = brief(body)
