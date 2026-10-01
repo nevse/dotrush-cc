@@ -1,5 +1,17 @@
 # Changelog
 
+### 0.8.5
+- A workspace with one solution (or one project) loads without `dotrush-pick-project`, as the README always said.
+  DotRush's `initialize` waits for a configuration with a `dotrush.roslyn` section before it loads anything, and
+  Claude Code sends only the `.lsp.json` `settings`, which have none, so with no project chosen nothing ever
+  loaded and every query returned "No symbols found". The proxy now sends an empty section at startup when no
+  project is chosen and no `dotrush.config.json` configures DotRush, and DotRush looks for the solution itself.
+- The proxy counts the projects DotRush reports loaded in `projects-loaded` in the session dir. With several
+  solutions DotRush now completes its load with nothing loaded. `dotrush-diagnostics.sh solution` and the CLI's
+  rename and request commands then refuse right away with `DotRush loaded no project in this session` and name
+  `dotrush-pick-project`, instead of the diagnostics run waiting out its timeout, and `where` shows
+  `load: completed with no project`.
+
 ### 0.8.4
 - `dotnet` is also looked for in the standard install dirs (`~/.dotnet`, `/usr/local/share/dotnet`,
   `/opt/homebrew/bin`, `/usr/share/dotnet`, `/usr/lib/dotnet`) after `PATH` and `DOTNET_ROOT`, by the proxy, the

@@ -1963,6 +1963,8 @@ class DiagnosticsTests(unittest.TestCase):
             lsp_frame({"jsonrpc": "2.0", "id": 7, "result": {"note": "textDocument/publishDiagnostics"}}),
             lsp_frame(publish(b, diagnostic(0, 0, 2, "CS0168", "declared"))),
             lsp_frame(publish(a)),
+            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/A.csproj"}}),
+            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/B.csproj"}}),
             lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
         ])
         script = (
@@ -1978,6 +1980,7 @@ class DiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(result.stdout, stream)
         self.assertTrue(Path(result.stderr.decode()).is_file())
+        self.assertEqual((Path(result.stderr.decode()).parent / "projects-loaded").read_text(), "2\n")
         data = json.loads(store.read_text())
         self.assertEqual(data["publishes"], 3)
         self.assertEqual(list(data["files"]), [b])
@@ -2078,6 +2081,8 @@ class DiagnosticsTests(unittest.TestCase):
         (ws / "responses" / "stale.json").write_text("{}")
         (ws / "edits").mkdir()
         (ws / "edits" / "0123456789ab.json").write_text("{}")
+        (ws / "load-completed").write_text("")
+        (ws / "projects-loaded").write_text("8\n")
         script = (
             PROXY_IMPORT
             + "proxy.ensure_workspace_dir()\n"
@@ -2088,6 +2093,8 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertTrue((ws / "responses").is_dir())
         self.assertEqual(os.listdir(ws / "responses"), [])
         self.assertFalse((ws / "edits").exists())
+        self.assertFalse((ws / "load-completed").exists())
+        self.assertEqual((ws / "projects-loaded").read_text(), "0\n")
 
     def test_an_agterm_session_dir_is_keyed_on_the_launching_claude_process(self):
         # Every Claude process started from one agterm tab (background jobs too) inherits its
@@ -2289,6 +2296,16 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("has not finished loading a project", result.stderr)
         self.assertIn("load: not completed", self.run_driver("where").stdout)
 
+    def test_solution_refuses_a_load_that_found_no_project(self):
+        ws = self.session(os.getpid())
+        (ws / "projects-loaded").write_text("0\n")
+
+        result = self.run_driver("solution")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DotRush loaded no project in this session", result.stderr)
+        self.assertIn("load: completed with no project", self.run_driver("where").stdout)
+
     def test_without_a_session_dir_it_says_to_start_the_language_server(self):
         result = self.run_driver("report")
         self.assertNotEqual(result.returncode, 0)
@@ -2384,6 +2401,54 @@ class DiagnosticsTests(unittest.TestCase):
             with self.subTest(path):
                 result = self.run_pick("apply", path)
                 self.assertEqual(result.returncode, 1)
+
+
+class StartupConfigTests(unittest.TestCase):
+    """What the proxy sends DotRush before the client's traffic: its initialize loads nothing until then."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / "repo"
+        self.workspace.mkdir()
+        self.target = self.root / "target.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def sent(self):
+        """Runs startup_config_inject in the workspace; returns the roslyn section it sent, or None."""
+        script = (
+            PROXY_IMPORT
+            + "import io, json\n"
+            "sink = io.BytesIO()\n"
+            "proxy.startup_config_inject(sink)\n"
+            "data = sink.getvalue()\n"
+            "print(json.dumps(json.loads(data.split(b'\\r\\n\\r\\n', 1)[1])['params']['settings']['dotrush']['roslyn'])"
+            " if data else 'none')\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root),
+               "DOTRUSH_TARGET_FILE": str(self.target), "DOTRUSH_REAL_BIN": str(self.root / "server" / "DotRush.dll")}
+        result = subprocess.run([sys.executable, "-c", script], cwd=self.workspace, env=env,
+                                capture_output=True, text=True, check=True)
+        out = result.stdout.strip()
+        return None if out == "none" else json.loads(out)
+
+    def test_the_persisted_target_is_sent(self):
+        roslyn = {"projectOrSolutionFiles": ["/repo/src/App.sln"], "restoreProjectsBeforeLoading": True}
+        self.target.write_text(json.dumps(roslyn))
+        self.assertEqual(self.sent(), roslyn)
+
+    def test_without_a_target_an_empty_section_lets_dotrush_look_for_a_solution(self):
+        self.assertEqual(self.sent(), {})
+
+    def test_an_unusable_target_falls_back_to_the_empty_section(self):
+        self.target.write_text('{"projectOrSolutionFiles": []}')
+        self.assertEqual(self.sent(), {})
+
+    def test_a_dotrush_config_file_in_the_workspace_is_left_to_dotrush(self):
+        (self.workspace / "dotrush.config.json").write_text('{"dotrush": {"roslyn": {}}}')
+        self.assertIsNone(self.sent())
 
 
 class InjectorTests(unittest.TestCase):

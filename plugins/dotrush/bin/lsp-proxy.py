@@ -85,10 +85,15 @@ LOG_PATH = os.environ.get("DOTRUSH_PROXY_LOG", os.path.join(WS_DIR, "proxy.log")
 TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(WS_DIR, "target.json")
 # The latest diagnostics DotRush published, read by the `dotrush-diagnostics` skill.
 DIAGNOSTICS_FILE = os.environ.get("DOTRUSH_DIAGNOSTICS_FILE") or os.path.join(WS_DIR, "diagnostics.json")
+# DotRush's own config file, read from its cwd (the workspace) or its install dir.
+DOTRUSH_CONFIG_FILE = "dotrush.config.json"
 # Present once DotRush sends dotrush/loadCompleted. Until then its initialize is still waiting for a
 # first project: a dotrush/reloadWorkspace then races that load, and DotRush either never starts code
 # analysis or loads the project twice and reports every diagnostic twice.
 LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
+# How many dotrush/projectLoaded this server has sent, 0 from proxy start. DotRush also completes a load that found
+# no single solution or project, so load-completed beside a 0 here means nothing is loaded.
+PROJECTS_LOADED_FILE = os.path.join(WS_DIR, "projects-loaded")
 # Request channel: plugin tooling injects requests whose id is "dotrush-cc:<uuid>", and the responses land
 # here as <uuid>.json instead of reaching Claude Code. The dir existing tells tooling the channel is available.
 RESPONSES_DIR = os.path.join(WS_DIR, "responses")
@@ -290,6 +295,8 @@ def pump_server_to_client(child_stdout, diagnostics=None):
             b = brief(body)
             if b == "notif    dotrush/loadCompleted":
                 mark_load_completed()
+            elif b == "notif    dotrush/projectLoaded":
+                count_project_loaded()
             if not b.startswith("response"):
                 log(f"S->C {b}")
 
@@ -332,6 +339,19 @@ def mark_load_completed():
             f.write(time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
     except OSError as e:
         log(f"cannot write {LOAD_COMPLETED_FILE}: {e}")
+
+
+_projects_loaded = 0
+
+
+def count_project_loaded():
+    """Counts one dotrush/projectLoaded and writes the total; the server->client pump is the only caller."""
+    global _projects_loaded
+    _projects_loaded += 1
+    try:
+        write_atomically(PROJECTS_LOADED_FILE, f"{_projects_loaded}\n".encode("ascii"))
+    except OSError as e:
+        log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
 
 
 def pump_stderr(child_stderr):
@@ -605,6 +625,11 @@ def ensure_workspace_dir():
         pass
     except OSError as e:
         log(f"cannot remove {LOAD_COMPLETED_FILE}: {e}")
+    # Written now rather than on the first project, so a missing file means a proxy that predates the count.
+    try:
+        write_atomically(PROJECTS_LOADED_FILE, b"0\n")
+    except OSError as e:
+        log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
     # Responses and rename plans belong to an earlier server; start the channel empty.
     for d in (RESPONSES_DIR, EDITS_DIR):
         try:
@@ -619,24 +644,40 @@ def ensure_workspace_dir():
         log(f"cannot create {RESPONSES_DIR}: {e}")
 
 
-def startup_config_inject(child_stdin):
-    """Replay the persisted target as workspace/didChangeConfiguration, first thing.
-
-    DotRush's initialize awaits configuration before loading projects, so pushing
-    this ahead of the client's messages makes the chosen solution load at startup —
-    no dotrush.config.json required. No-op if nothing has been chosen yet.
-    """
+def persisted_target():
+    """The roslyn section saved by `dotrush-pick-project`, or None when there is none or it is unusable."""
     try:
         if not os.path.exists(TARGET_FILE):
-            return
+            return None
         with open(TARGET_FILE) as f:
             roslyn = json.load(f)
-        if not isinstance(roslyn, dict) or not roslyn.get("projectOrSolutionFiles"):
-            log(f"target file has no projectOrSolutionFiles: {TARGET_FILE}")
-            return
     except (OSError, json.JSONDecodeError) as e:
         log(f"target file unreadable ({TARGET_FILE}): {e}")
+        return None
+    if not isinstance(roslyn, dict) or not roslyn.get("projectOrSolutionFiles"):
+        log(f"target file has no projectOrSolutionFiles: {TARGET_FILE}")
+        return None
+    return roslyn
+
+
+def startup_config_inject(child_stdin):
+    """Send DotRush its roslyn section as workspace/didChangeConfiguration, first thing.
+
+    DotRush's initialize waits for a configuration that has a dotrush.roslyn section before it loads anything,
+    and Claude Code sends the .lsp.json `settings`, which have none. So the persisted target goes first, making
+    the chosen solution load with no dotrush.config.json in the repo. Without one, an empty section lets DotRush
+    look for a single .sln/.slnx/.slnf, then a single .csproj, under the workspace; without it nothing ever
+    loads. A dotrush.config.json DotRush reads itself (from its cwd or its own dir) is left to do that.
+    """
+    roslyn = persisted_target()
+    if roslyn is not None:
+        note = f"applied persisted target {roslyn.get('projectOrSolutionFiles')}"
+    elif any(os.path.isfile(os.path.join(d, DOTRUSH_CONFIG_FILE)) for d in (os.getcwd(), os.path.dirname(REAL_BIN))):
+        log(f"startup: {DOTRUSH_CONFIG_FILE} configures DotRush; nothing injected")
         return
+    else:
+        roslyn = {}
+        note = "no project chosen; DotRush looks for a single solution or project"
     msg = {"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
            "params": {"settings": {"dotrush": {"roslyn": roslyn}}}}
     body = json.dumps(msg).encode("utf-8")
@@ -644,7 +685,7 @@ def startup_config_inject(child_stdin):
         try:
             child_stdin.write(frame(body))
             child_stdin.flush()
-            log(f"startup: applied persisted target {roslyn.get('projectOrSolutionFiles')}")
+            log(f"startup: {note}")
         except (OSError, ValueError) as e:
             log(f"startup config inject failed: {e}")
 

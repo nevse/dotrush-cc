@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace DotRushCli;
 
 // A per-session runtime dir as lsp-proxy.py lays it out: workspace.txt, session.txt, pid, target.json,
-// diagnostics.json, load-completed and responses/. Every property reads the disk when asked.
+// diagnostics.json, load-completed, projects-loaded and responses/. Every property reads the disk when asked.
 public sealed record SessionState(string Dir)
 {
     public string? Workspace => ReadTrimmed("workspace.txt");
@@ -14,6 +14,12 @@ public sealed record SessionState(string Dir)
     public bool IsProxyRunning => Pid is { } pid && Posix.IsAlive(pid);
 
     public bool LoadCompleted => File.Exists(Path.Combine(Dir, "load-completed"));
+
+    // How many projects the server reported loaded; null from a proxy that predates the count.
+    public int? ProjectsLoaded => int.TryParse(ReadTrimmed("projects-loaded"), out var count) ? count : null;
+
+    // DotRush completes a load that found no single solution or project, so a completed load can hold nothing.
+    public bool LoadedNothing => LoadCompleted && ProjectsLoaded == 0;
 
     public string? Target => ReadTrimmed("target.json");
 
@@ -81,8 +87,10 @@ public static class SessionCommand
         stdout.WriteLine($"dir: {session.Dir}");
         stdout.WriteLine($"workspace: {session.Workspace ?? "unknown"}");
         stdout.WriteLine(session.IsProxyRunning ? $"proxy: running (pid {session.Pid})" : "proxy: not running");
-        stdout.WriteLine(session.LoadCompleted
-            ? "load: completed" : "load: not completed (no project loaded yet, or still loading)");
+        stdout.WriteLine(
+            session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
+            : session.LoadCompleted ? "load: completed"
+            : "load: not completed (no project loaded yet, or still loading)");
         stdout.WriteLine($"target: {session.Target ?? "none chosen"}");
         stdout.WriteLine(session.CapturesDiagnostics
             ? $"publishes: {session.Publishes()}" : "publishes: no capture (older proxy)");
@@ -110,6 +118,8 @@ public static class Session
                 ? "the running DotRush proxy predates the request channel; restart Claude Code"
             : !found.LoadCompleted
                 ? "DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry"
+            : found.LoadedNothing
+                ? "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"
             : null;
         if (problem is not null)
         {

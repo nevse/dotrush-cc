@@ -69,21 +69,25 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 | `proxy.log` | proxy | humans, skills on failure | appended |
 | `target.json` | `dotrush-pick-project.sh` | proxy replays it at start | per session |
 | `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, `dotrush-pick-project.sh` | removed at proxy start |
+| `projects-loaded` | proxy: `0` at start, then the count of `dotrush/projectLoaded` | CLI, diagnostics script | rewritten at proxy start |
 | `diagnostics.json` | proxy, coalesced every 0.5 s | diagnostics script | reset at proxy start |
 | `responses/` | proxy creates empty; `<uuid>.json` via temp + rename | CLI deletes after reading; stale after 10 min | recreated at proxy start only |
 | `edits/` | `rename preview`: `<plan>.json` (sha256 and URI per file), `<plan>.diff` | `rename apply` | removed at proxy start |
 
 ## Flows
 
-- **LSP traffic.** Frames are forwarded byte for byte. Before any client traffic the proxy replays `target.json` as
-  `workspace/didChangeConfiguration`: DotRush's `initialize` waits for a configuration, so the chosen project loads
-  with no `dotrush.config.json`.
+- **LSP traffic.** Frames are forwarded byte for byte. Before any client traffic the proxy sends DotRush a
+  `workspace/didChangeConfiguration` with its `dotrush.roslyn` section: `target.json` when there is one, otherwise an
+  empty section, unless a `dotrush.config.json` configures DotRush. DotRush's `initialize` loads nothing until a
+  configuration with that section arrives, and Claude Code's `.lsp.json` `settings` never carry one. The empty
+  section makes DotRush load the workspace's single solution (or single project) on its own; with several it
+  completes the load with no project, which `projects-loaded` = `0` tells apart.
 - **Injection.** One JSON-RPC message per FIFO line; the injector adds `jsonrpc`, frames it and writes it under
   `_stdin_lock`. Notifications only; requests go through the channel.
 - **Request channel.** The CLI picks the id `dotrush-cc:<uuid>`, so the proxy keeps no request table. The
   server→client pump substring-checks each frame for the prefix and writes a matching response to
   `responses/<uuid>.json` instead of forwarding it. The CLI's `RequireChannel` checks, in order: proxy pid alive,
-  `responses/` present, `load-completed` present. It then writes the line and polls every 20 ms; on timeout it
+  `responses/` present, `load-completed` present, `projects-loaded` not `0`. It then writes the line and polls every 20 ms; on timeout it
   sends `$/cancelRequest` and drops a response that lands within a second.
 - **Diagnostics.** The script records `publishes`, injects `dotrush/solutionDiagnostics`, and waits until the count
   moves and publishing has been quiet for 2 s: DotRush signals no completion, so a clean solution exits 3 on timeout.
@@ -117,5 +121,7 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
   identifies a rename.
 - A request-channel id becomes a file name, so the proxy accepts only a lowercase uuid suffix.
 - The proxy's stdout is the LSP stream: nothing but frames may reach it.
+- DotRush's `initialize` waits for a `dotrush.roslyn` configuration and drops any other, so without the proxy's
+  startup injection no project ever loads, not even a workspace's only solution.
 - `dotnet-trace --duration` goes through `TimeSpan.Parse`, which reads `00:30` as 30 minutes.
 - Known and accepted: lock reclaim in `dotrush_lock` is not atomic (`docs/backlog/lock-reclaim-is-not-atomic.md`).

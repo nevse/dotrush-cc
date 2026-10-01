@@ -80,8 +80,10 @@ never installed over.
 
 ## Point DotRush at your project
 
-DotRush loads a project only when the workspace resolves to a single `.sln/.slnx/.csproj`. In a
-monorepo/multi-project root it finds many and **loads nothing** — every query returns "No symbols found".
+With no project chosen, DotRush loads the workspace's single solution (`.sln/.slnx/.slnf`) on its own, searching
+from the root down to the first directory that has one; failing that, a single `.csproj`. In a monorepo or
+multi-project root it finds several and **loads nothing**: every query returns "No symbols found", and
+`dotrush-diagnostics.sh where` shows `load: completed with no project`.
 
 **Recommended — the `dotrush-pick-project` skill (interactive, no config file).** Ask Claude to *"set up the
 DotRush project"* (or invoke the `dotrush-pick-project` skill). It finds the `.sln/.slnx/.csproj` candidates in
@@ -358,7 +360,9 @@ Notes (learned while verifying this):
 
 ## Troubleshooting
 
-- **Every query returns "No symbols found"** → no project loaded. Run the **`dotrush-pick-project`** skill to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
+- **Every query returns "No symbols found"** → no project loaded: the workspace has several solutions or none, or
+  the load is still running (`dotrush-diagnostics.sh where` tells which). Run the **`dotrush-pick-project`** skill
+  to pick a `.sln/.slnx/.csproj` (or add `dotrush.config.json`).
 - **Navigation works but no diagnostics ever arrive** (`dotrush-diagnostics.sh where` shows `load: not completed`
   long after `projectLoaded`) → the project was loaded with a `dotrush/reloadWorkspace` before DotRush's first load
   completed, so its analysis worker never started. The same race can instead load the project twice, which shows
