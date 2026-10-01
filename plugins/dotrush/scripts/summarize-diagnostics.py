@@ -7,6 +7,7 @@ for --quiet seconds before reporting, since DotRush sends no signal when an anal
 """
 import argparse
 import json
+import re
 import sys
 import time
 from collections import Counter
@@ -15,6 +16,8 @@ from urllib.parse import unquote, urlparse
 
 SEVERITIES = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 NO_PUBLISH_EXIT = 3
+# DotRush names the source of a multi-targeted project's diagnostic "Project(net10.0)", one per target framework.
+TARGETED_SOURCE = re.compile(r"^(.*)\(([^()]+)\)$")
 
 
 def load(path):
@@ -60,19 +63,40 @@ def code_of(diagnostic):
     return "-" if code is None or code == "" else str(code)
 
 
+def merge_target_frameworks(diagnostics):
+    """One (diagnostic, frameworks) per diagnostic, the copies a multi-targeted project reports per framework merged.
+
+    A copy repeated for the same framework stays separate: that is DotRush reporting it twice."""
+    groups = {}
+    for d in diagnostics:
+        match = TARGETED_SOURCE.match(d.get("source") or "")
+        project, framework = (match.group(1), match.group(2)) if match else (d.get("source"), None)
+        start = (d.get("range") or {}).get("start") or {}
+        key = (d.get("severity"), start.get("line"), start.get("character"), code_of(d), d.get("message"), project)
+        groups.setdefault(key, (d, []))[1].append(framework)
+    merged = []
+    for d, frameworks in groups.values():
+        distinct = list(dict.fromkeys(frameworks))
+        copies = max(frameworks.count(f) for f in distinct)
+        labels = distinct if len(distinct) > 1 else []
+        merged.extend((d, labels) for _ in range(copies))
+    return merged
+
+
 def report(data, root, count, hints=False):
     rows = []
     for uri, diagnostics in data["files"].items():
         path = display_path(uri, root)
-        for d in diagnostics:
+        for d, frameworks in merge_target_frameworks(diagnostics):
             start = (d.get("range") or {}).get("start") or {}
+            message = (d.get("message") or "").strip().splitlines()[0] if d.get("message") else ""
             rows.append((
                 d.get("severity") or 1,
                 path,
                 start.get("line", 0) + 1,
                 start.get("character", 0) + 1,
                 code_of(d),
-                (d.get("message") or "").strip().splitlines()[0] if d.get("message") else "",
+                f"{message} [{', '.join(frameworks)}]" if frameworks else message,
             ))
     rows.sort()
 
@@ -81,7 +105,7 @@ def report(data, root, count, hints=False):
     shown = rows if hints else [r for r in rows if r[0] != 4]
     hidden = len(rows) - len(shown)
     out = [
-        f"Files: {len({r[1] for r in shown})}  "
+        f"Files: {len({r[1] for r in rows})}  "
         + "  ".join(f"{name.capitalize()}s: {severities.get(name, 0)}" for name in SEVERITIES.values()),
         f"Publishes: {data.get('publishes', 0)}",
     ]

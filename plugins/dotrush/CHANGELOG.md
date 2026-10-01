@@ -1,5 +1,17 @@
 # Changelog
 
+### 0.8.6
+- The diagnostics summary lists a diagnostic once when a multi-targeted project reports it per framework, with the
+  frameworks after the message (`bad [net10.0, net11.0]`), and counts it once. Before, each copy was listed and
+  counted, and the `dotrush-diagnostics` skill read "every diagnostic twice" as a double load and told the user to
+  restart Claude Code. A copy repeated for the same framework is still listed twice, so that sign of a double load
+  keeps working.
+- `Files:` counts every file with a diagnostic. It counted only the files with listed rows, so a solution with
+  only hints read `Files: 0` next to `Hints: 205`, and `--hints` changed it to 96.
+- `dotrush-diagnostics.sh solution` no longer prints "no project chosen for this session; DotRush analyzes only
+  what it loaded on its own" when no project was picked: since 0.8.5 DotRush loads a single solution itself, and a
+  load with nothing in it is refused before the run.
+
 ### 0.8.5
 - A workspace with one solution (or one project) loads without `dotrush-pick-project`, as the README always said.
   DotRush's `initialize` waits for a configuration with a `dotrush.roslyn` section before it loads anything, and

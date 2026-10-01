@@ -2144,7 +2144,8 @@ class DiagnosticsTests(unittest.TestCase):
         with_hints = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--hints"],
                                     capture_output=True, text=True, check=True)
 
-        self.assertIn("Files: 3  Errors: 1  Warnings: 2  Infos: 1  Hints: 1", result.stdout)
+        # The hint-only file counts too, so --hints never changes the file count.
+        self.assertIn("Files: 4  Errors: 1  Warnings: 2  Infos: 1  Hints: 1", result.stdout)
         self.assertNotIn("CS8019", result.stdout)
         self.assertIn("1 hint hidden; pass --hints to list", result.stdout)
         self.assertIn("/obj/Generated.cs:2:1  hint  CS8019", with_hints.stdout)
@@ -2156,6 +2157,37 @@ class DiagnosticsTests(unittest.TestCase):
             "  b/Z.cs:10:5  warning  CS0219  unused",
         ])
         self.assertIn("... 1 more; pass a larger count", result.stdout)
+
+    def test_summary_merges_the_copies_of_a_multi_targeted_project_and_keeps_true_duplicates(self):
+        store = self.root / "diagnostics.json"
+
+        def sourced(source, *args):
+            return {**diagnostic(*args), "source": source}
+
+        self.write_store(store, {
+            (self.root / "Core/A.cs").as_uri(): [
+                sourced("Core(net10.0)", 3, 4, 1, "CS0029", "bad"),
+                sourced("Core(net11.0)", 3, 4, 1, "CS0029", "bad"),
+                # Only one framework reports this one, so it carries no framework list.
+                sourced("Core(net11.0)", 7, 0, 2, "CS0618", "obsolete"),
+            ],
+            (self.root / "App/B.cs").as_uri(): [
+                # The same project reporting it twice: DotRush loaded it twice, which the skill tells apart.
+                sourced("App", 1, 0, 1, "CS0103", "missing"),
+                sourced("App", 1, 0, 1, "CS0103", "missing"),
+            ],
+        })
+
+        result = subprocess.run([sys.executable, str(SUMMARIZE_DIAGNOSTICS), str(store), "--root", str(self.root)],
+                                capture_output=True, text=True, check=True)
+
+        self.assertIn("Files: 2  Errors: 3  Warnings: 1", result.stdout)
+        self.assertEqual(section(result.stdout, "Diagnostics (errors first):"), [
+            "  App/B.cs:2:1  error  CS0103  missing",
+            "  App/B.cs:2:1  error  CS0103  missing",
+            "  Core/A.cs:4:5  error  CS0029  bad [net10.0, net11.0]",
+            "  Core/A.cs:8:1  warning  CS0618  obsolete",
+        ])
 
     def test_waiting_reports_only_once_a_publish_passes_the_baseline(self):
         store = self.root / "diagnostics.json"
