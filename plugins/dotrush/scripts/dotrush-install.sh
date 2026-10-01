@@ -69,16 +69,27 @@ dotrush_is_commit() {
   [[ "$1" =~ ^[0-9a-f]{40}$ ]]
 }
 
+# Where the .NET installers put the host, tried after PATH and DOTNET_ROOT: a Claude Code started from the Dock,
+# the desktop app or a terminal's GUI launcher has neither. Same list as DOTNET_DIRS in lsp-proxy.py.
+DOTRUSH_DOTNET_DIRS=("$HOME/.dotnet" /usr/local/share/dotnet /opt/homebrew/bin /usr/share/dotnet /usr/lib/dotnet)
+
 dotrush_dotnet() {
+  local dir
   if [[ -n "${DOTRUSH_DOTNET:-}" ]]; then
     printf '%s\n' "$DOTRUSH_DOTNET"
-  elif command -v dotnet >/dev/null 2>&1; then
-    command -v dotnet
-  elif [[ -n "${DOTNET_ROOT:-}" && -x "$DOTNET_ROOT/dotnet" ]]; then
-    printf '%s\n' "$DOTNET_ROOT/dotnet"
-  else
-    dotrush_fail "a .NET runtime is required: no dotnet on PATH or in DOTNET_ROOT"
+    return
   fi
+  if command -v dotnet >/dev/null 2>&1; then
+    command -v dotnet
+    return
+  fi
+  for dir in ${DOTNET_ROOT:+"$DOTNET_ROOT"} "${DOTRUSH_DOTNET_DIRS[@]}"; do
+    if [[ -f "$dir/dotnet" && -x "$dir/dotnet" ]]; then
+      printf '%s\n' "$dir/dotnet"
+      return
+    fi
+  done
+  dotrush_fail "a .NET runtime is required: no dotnet on PATH, in DOTNET_ROOT or in ${DOTRUSH_DOTNET_DIRS[*]}"
 }
 
 # DotRush's build.cake `pack` step zips extension/bin/<module> into DotRush.Bundle.<module>.zip. The

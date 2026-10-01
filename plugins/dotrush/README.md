@@ -58,7 +58,11 @@ built from source on first use; move the pin to the next release tag once it shi
 again.
 
 The bundles are platform-neutral and the server has no native launcher, so the proxy starts it as
-`dotnet DotRush.dll`, which needs a .NET 10 or newer runtime on `PATH` or in `DOTNET_ROOT`. On C# LSP start the
+`dotnet DotRush.dll`, which needs a .NET 10 or newer runtime. The `dotnet` host is looked up as `DOTRUSH_DOTNET`, then
+on `PATH`, in `DOTNET_ROOT`, and in the standard install dirs: `~/.dotnet`, `/usr/local/share/dotnet`,
+`/opt/homebrew/bin`, `/usr/share/dotnet`, `/usr/lib/dotnet`. The last step covers a Claude Code started from the
+Dock, the desktop app or a terminal's GUI launcher, whose `PATH` has no `dotnet`. A host found off `PATH` is put on
+the server's `PATH` and in its `DOTNET_ROOT`, so the MSBuild that DotRush starts finds the SDK. On C# LSP start the
 proxy compares `${CLAUDE_PLUGIN_DATA}/server/.dotrush-ref` with the pin. When the server is
 missing or at another ref, it runs the installer, which prepares the new server beside the old one and swaps it in
 whole; if that fails, the previous server keeps running. A build makes that first start take minutes, so
@@ -155,8 +159,8 @@ All three skills use `scripts/dotrush-profile.sh`, which runs DotRush's own buil
 `dotnet-gcdump` ([JaneySprings/diagnostics](https://github.com/JaneySprings/diagnostics)) at the pinned ref. The
 tools are installed into `${CLAUDE_PLUGIN_DATA}/diagnostics` on first use exactly as the server is (see
 [The server auto-installs](#the-server-auto-installs)); a failed build keeps its log in
-`${CLAUDE_PLUGIN_DATA}/diagnostics-build.log`. They run as `dotnet <tool>.dll`, so a .NET runtime must be on
-`PATH` or in `DOTNET_ROOT`. `dotrush-profile.sh tools` shows the pin, whether it installs from a release or builds,
+`${CLAUDE_PLUGIN_DATA}/diagnostics-build.log`. They run as `dotnet <tool>.dll`, with the `dotnet` host found as
+the server's is (see [The server auto-installs](#the-server-auto-installs)). `dotrush-profile.sh tools` shows the pin, whether it installs from a release or builds,
 and the state of the server and the tools, installing nothing. `DOTRUSH_DIAGNOSTICS_DIR` uses a ready directory of
 the tools instead.
 
@@ -270,7 +274,7 @@ stderr prefixed with `dotrush-cli:`. `help`, `-h` and `--help` print the table a
   `--timeout needs a number of seconds greater than 0` (or `--timeout may be given only once`).
 - `<params-json>` must be a JSON object or array.
 - The wrapper needs `shasum` or `sha256sum` to hash the sources, and builds and runs with `DOTRUSH_DOTNET` when that
-  is set, else `dotnet` from `PATH` or `DOTNET_ROOT`. It always exports `DOTRUSH_DATA_DIR` as the data dir it derives
+  is set, else `dotnet` from `PATH`, `DOTNET_ROOT` or a standard install dir, as the proxy finds it. It always exports `DOTRUSH_DATA_DIR` as the data dir it derives
   (`CLAUDE_PLUGIN_DATA` when set), overwriting an inherited value.
 
 ## Injecting custom LSP messages (the proxy)
