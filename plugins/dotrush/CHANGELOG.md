@@ -1,5 +1,12 @@
 # Changelog
 
+### 0.8.3
+- The proxy forwards only the errors and warnings of each `textDocument/publishDiagnostics` to Claude Code (and
+  diagnostics without a severity, which Claude Code takes for errors). Claude Code filters no severity itself, so
+  style suggestions such as IDE0058, IDE0130 or CA1305 arrived in a `<new-diagnostics>` block after every LSP call,
+  even on files Claude had only read, and could use up its cap of 30 diagnostics per turn before another file's
+  errors. `diagnostics.json`, and so `dotrush-diagnostics`, still holds every severity.
+
 ### 0.8.2
 - The three profiling skills say how to look at a capture without uploading it. DotRush's VS Code extension
   already registers the viewers, and the helper's artifacts match their file-name patterns: `*.speedscope.json`

@@ -22,7 +22,9 @@ User-facing behavior is in `plugins/dotrush/README.md`; this file covers how the
 - **Proxy** (`bin/lsp-proxy.py`, stdlib-only Python 3). One per Claude Code session. Owns the session dir, installs
   the server when the pin moved, and runs four daemon threads beside the main server→client pump: client→server
   pump, stderr pump, FIFO injector, diagnostics flusher. `_stdin_lock` serializes the three writers into DotRush's
-  stdin (client pump, injector, startup replay), always at frame boundaries.
+  stdin (client pump, injector, startup replay), always at frame boundaries. The server→client pump forwards frames
+  verbatim except a `publishDiagnostics` with info or hint entries, which it re-frames without them after mirroring
+  the full list.
 - **CLI** (`tools/DotRushCli`, `net10.0`, no packages). `session`, `request`, `rename preview|apply`.
   `Program.Run` dispatches through one usage table; every command takes a `CommandContext`.
   - `Session` finds this session's dir and checks readiness (`RequireChannel`).

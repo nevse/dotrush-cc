@@ -1938,6 +1938,38 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(list(data["files"]), [b])
         self.assertIsInstance(data["updated"], float)
 
+    def test_proxy_forwards_errors_and_warnings_only_and_mirrors_every_severity(self):
+        store = self.root / "diagnostics.json"
+        a, b = "file:///src/A.cs", "file:///src/B.cs"
+        error, warning = diagnostic(1, 2, 1, "CS0029", "bad"), diagnostic(3, 0, 2, "CS0219", "unused")
+        info, hint = diagnostic(4, 0, 3, "IDE0058", "value unused"), diagnostic(5, 0, 4, "IDE0130", "namespace — путь")
+        unrated = {k: v for k, v in diagnostic(6, 0, 1, "X1", "no severity").items() if k != "severity"}
+        stream = b"".join([
+            lsp_frame(publish(a, info, error, hint, warning, unrated)),
+            lsp_frame(publish(b, info, hint)),
+        ])
+        script = (
+            PROXY_IMPORT
+            + "os.makedirs(proxy.WS_DIR)\n"
+            "store = proxy.DiagnosticsStore(sys.argv[1])\n"
+            "proxy.pump_server_to_client(sys.stdin, store)\n"
+            "store.write()\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "sev"}
+        result = subprocess.run([sys.executable, "-c", script, str(store)], input=stream, env=env, capture_output=True, check=True)
+
+        reader_script = (
+            PROXY_IMPORT
+            + "import json\nr = proxy.FrameReader(0)\n"
+            "out = []\n"
+            "while (f := r.read_frame()) is not None: out.append(json.loads(f[1]))\n"
+            "print(json.dumps(out))\n"
+        )
+        forwarded = json.loads(subprocess.run([sys.executable, "-c", reader_script], input=result.stdout,
+                                              env=env, capture_output=True, check=True).stdout)
+        self.assertEqual(forwarded, [publish(a, error, warning, unrated), publish(b)])
+        self.assertEqual(json.loads(store.read_text())["files"], {a: [info, error, hint, warning, unrated], b: [info, hint]})
+
     def pump(self, stream, make_responses=True):
         """Runs the proxy's server->client pump over stream; returns (stdout, WS_DIR).
 
