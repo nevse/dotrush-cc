@@ -59,7 +59,8 @@ Or enable it declaratively in `.claude/settings.json`:
 
 You talk to Claude in plain language; the plugin supplies the LSP server and the skills behind it.
 
-**Pick the project** (once per session, or when queries return "No symbols found"):
+**Pick the project** when the workspace has several solutions (a single one loads on its own), or when queries
+return "No symbols found":
 
 > set up the DotRush project
 

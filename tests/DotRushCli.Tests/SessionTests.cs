@@ -37,6 +37,7 @@ public sealed class SessionTests : IDisposable
         string? ClaudePid = null,
         bool Responses = true,
         bool LoadCompleted = true,
+        int? ProjectsLoaded = null,
         string? Target = null,
         string? Diagnostics = """{"publishes": 0, "files": {}}""");
 
@@ -49,6 +50,7 @@ public sealed class SessionTests : IDisposable
         if (spec.ClaudePid is not null) File.WriteAllText(Path.Combine(dir, "claude-pid"), spec.ClaudePid + "\n");
         if (spec.Responses) Directory.CreateDirectory(Path.Combine(dir, "responses"));
         if (spec.LoadCompleted) File.WriteAllText(Path.Combine(dir, "load-completed"), "");
+        if (spec.ProjectsLoaded is not null) File.WriteAllText(Path.Combine(dir, "projects-loaded"), spec.ProjectsLoaded + "\n");
         if (spec.Target is not null) File.WriteAllText(Path.Combine(dir, "target.json"), spec.Target);
         if (spec.Diagnostics is not null) File.WriteAllText(Path.Combine(dir, "diagnostics.json"), spec.Diagnostics);
         return dir;
@@ -387,6 +389,51 @@ public sealed class SessionTests : IDisposable
         Assert.Equal((1, null,
             "dotrush-cli: DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry\n"),
             (exit, session, stderr));
+    }
+
+    [Fact]
+    public void The_channel_requires_a_load_that_found_a_project()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, ProjectsLoaded: 0));
+
+        var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
+
+        Assert.Equal((1, null,
+            "dotrush-cli: DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project\n"),
+            (exit, session, stderr));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(8)]
+    public void The_channel_accepts_a_load_with_projects_or_from_a_proxy_without_the_count(int? projectsLoaded)
+    {
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid,
+            ProjectsLoaded: projectsLoaded));
+
+        var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
+
+        Assert.Equal((0, dir, ""), (exit, session?.Dir, stderr));
+    }
+
+    [Fact]
+    public void Session_says_when_a_completed_load_found_no_project()
+    {
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid,
+            ProjectsLoaded: 0));
+
+        var result = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal((0, $"""
+            dir: {dir}
+            workspace: {project}
+            proxy: running (pid {LivePid})
+            load: completed with no project (none chosen, and no single solution or project found)
+            target: none chosen
+            publishes: 0
+            channel: available
+
+            """, ""), result);
     }
 
     [Theory]

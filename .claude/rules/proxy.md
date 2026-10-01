@@ -16,6 +16,12 @@ paths:
 - Never send DotRush `dotrush/reloadWorkspace` before `load-completed` exists in the session dir: it races the first
   project load (analysis never starts, or every diagnostic appears twice).
   Inject `workspace/didChangeConfiguration` first; it replaces the whole `roslyn` section.
+- The proxy's startup injection (`startup_config_inject`) is what lets DotRush load anything: its `initialize`
+  waits for a `dotrush.roslyn` section, and Claude Code sends only the `.lsp.json` `settings`, which carry none.
+  Put a default roslyn section in `.lsp.json` instead and it arrives after the persisted target and replaces it.
+- `load-completed` does not mean a project loaded: DotRush completes a load that found several solutions, or none,
+  with nothing loaded. `projects-loaded` (`0` at proxy start) tells them apart; readers treat a missing file as an
+  older proxy.
 - The injector holds its own write end of `inject.fifo` (`open_fifo_for_reading`) so it never reaches EOF between
   writers. Keep it: a reader that closes and reopens silently drops what a writer sends in between (no EPIPE for
   lines written before the close).
