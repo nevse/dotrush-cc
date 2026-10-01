@@ -1829,6 +1829,51 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(dll.stdout.strip(), str([dotnet, "/srv/DotRush.dll"]))
         self.assertEqual(launcher.stdout.strip(), str(["/opt/DotRush"]))
 
+    def off_path_dotnet(self):
+        """A dotnet host in $HOME/.dotnet, the first standard dir, and an env whose PATH has no dotnet."""
+        host = self.root / ".dotnet" / "dotnet"
+        host.parent.mkdir()
+        host.write_text(STUB_DOTNET)
+        host.chmod(0o755)
+        env = {k: v for k, v in self.env.items() if k not in ("DOTRUSH_DOTNET", "DOTNET_ROOT")}
+        return host, {**env, "PATH": "/usr/bin:/bin", "DOTRUSH_PROXY_LOG": ""}
+
+    def test_proxy_finds_dotnet_in_a_standard_dir_and_puts_it_on_path_for_the_server(self):
+        host, env = self.off_path_dotnet()
+        check = (
+            PROXY_IMPORT
+            + "proxy.expose_dotnet()\n"
+            "print(proxy.server_command('/srv/DotRush.dll'))\n"
+            "print(os.environ['PATH'].split(os.pathsep)[0])\n"
+            "print(os.environ['DOTNET_ROOT'])\n"
+        )
+        result = subprocess.run([sys.executable, "-c", check], env=env, check=True, capture_output=True, text=True)
+
+        command, path_head, root = result.stdout.splitlines()
+        self.assertEqual(command, str([str(host), "/srv/DotRush.dll"]))
+        self.assertEqual(path_head, str(host.parent))
+        self.assertEqual(Path(root).resolve(), host.parent.resolve())
+
+    def test_proxy_leaves_path_alone_when_dotnet_is_on_it(self):
+        check = PROXY_IMPORT + "before = os.environ['PATH']\nproxy.expose_dotnet()\nprint(os.environ['PATH'] == before)\n"
+        env = {k: v for k, v in self.env.items() if k != "DOTRUSH_DOTNET"}
+        result = subprocess.run([sys.executable, "-c", check], env={**env, "DOTRUSH_PROXY_LOG": ""},
+                                check=True, capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), "True")
+
+    def test_installer_finds_dotnet_in_dotnet_root_then_a_standard_dir(self):
+        host, env = self.off_path_dotnet()
+        root = self.root / "root"
+        root.mkdir()
+        (root / "dotnet").write_text(STUB_DOTNET)
+        (root / "dotnet").chmod(0o755)
+
+        standard = call_helper("dotrush_dotnet", env=env)
+        from_root = call_helper("dotrush_dotnet", env={**env, "DOTNET_ROOT": str(root)})
+
+        self.assertEqual(standard.stdout.strip(), str(host), standard.stderr)
+        self.assertEqual(from_root.stdout.strip(), str(root / "dotnet"), from_root.stderr)
+
     def test_profiling_installs_diagnostics_like_the_server_and_drops_the_nuget_tools(self):
         legacy = self.data / "diagnostics-tools"
         legacy.mkdir(parents=True)

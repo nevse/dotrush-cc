@@ -8,7 +8,7 @@
 #
 # Environment:
 #   DOTRUSH_CLI_DIR  run DotRushCli.dll from this directory and build nothing
-#   DOTRUSH_DOTNET   the dotnet host to build and run with (default: dotnet on PATH)
+#   DOTRUSH_DOTNET   the dotnet host to build and run with (default: dotnet on PATH, in DOTNET_ROOT or a standard install dir)
 #   DOTRUSH_DATA_DIR always exported as the data dir this script derives (CLAUDE_PLUGIN_DATA when set): an
 #                    inherited value is overwritten, so point the CLI at another tree with CLAUDE_PLUGIN_DATA
 #

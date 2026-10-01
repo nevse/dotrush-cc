@@ -13,6 +13,9 @@ paths:
 - An install prepares the component beside its target and swaps it in whole under `<target>.lock`; a failure leaves
   the previous install running. Keep new steps inside the staged dir.
 - A server named by `DOTRUSH_REAL_BIN` is never installed over.
+- `dotnet` is found in one order everywhere: `DOTRUSH_DOTNET`, `PATH`, `DOTNET_ROOT`, then the standard install dirs
+  (`DOTNET_DIRS` in `lsp-proxy.py`, `DOTRUSH_DOTNET_DIRS` in `dotrush-install.sh`; keep the two lists equal). The
+  proxy puts a host found off `PATH` on `PATH` and in `DOTNET_ROOT` before the installer and the server run.
 - `CLAUDE_PLUGIN_DATA` reaches the language server but not a skill's Bash commands, so every script goes through
   `dotrush_data_dir`, which derives the same dir from the plugin's install path. Never read the variable directly.
 - `dotrush_lock` reclaims a dead holder's lock non-atomically; that is known and accepted

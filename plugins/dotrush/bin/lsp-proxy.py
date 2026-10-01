@@ -498,14 +498,44 @@ def ensure_server():
     return REAL_BIN if os.path.exists(REAL_BIN) else None
 
 
+# Where the .NET installers put the host, tried after PATH and DOTNET_ROOT: a Claude Code started from the Dock,
+# the desktop app or a terminal's GUI launcher has neither. Same list as dotrush_dotnet in dotrush-install.sh.
+DOTNET_DIRS = ("~/.dotnet", "/usr/local/share/dotnet", "/opt/homebrew/bin", "/usr/share/dotnet", "/usr/lib/dotnet")
+
+
+def find_dotnet():
+    """The dotnet host: DOTRUSH_DOTNET, then PATH, then DOTNET_ROOT and DOTNET_DIRS; None when there is none."""
+    if os.environ.get("DOTRUSH_DOTNET"):
+        return os.environ["DOTRUSH_DOTNET"]
+    found = shutil.which("dotnet")
+    if found:
+        return found
+    name = "dotnet.exe" if os.name == "nt" else "dotnet"
+    dirs = ([os.environ["DOTNET_ROOT"]] if os.environ.get("DOTNET_ROOT") else []) + [os.path.expanduser(d) for d in DOTNET_DIRS]
+    for d in dirs:
+        candidate = os.path.join(d, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def expose_dotnet():
+    """Puts a dotnet found off PATH on PATH and in DOTNET_ROOT, for the installer and the server.
+
+    The installer builds with it, and DotRush starts MSBuild, which finds the SDK through PATH or DOTNET_ROOT."""
+    dotnet = find_dotnet()
+    if not dotnet or shutil.which("dotnet") == dotnet:
+        return
+    log(f"dotnet is not on PATH; using {dotnet}")
+    os.environ["PATH"] = os.path.dirname(dotnet) + os.pathsep + os.environ.get("PATH", "")
+    os.environ.setdefault("DOTNET_ROOT", os.path.dirname(os.path.realpath(dotnet)))
+
+
 def server_command(path):
     """The command that starts the server at path: a dll through the dotnet host, anything else as it is."""
     if not path.endswith(".dll"):
         return [path]
-    dotnet = shutil.which("dotnet")
-    if not dotnet and os.environ.get("DOTNET_ROOT"):
-        candidate = os.path.join(os.environ["DOTNET_ROOT"], "dotnet.exe" if os.name == "nt" else "dotnet")
-        dotnet = candidate if os.path.exists(candidate) else None
+    dotnet = find_dotnet()
     return [dotnet, path] if dotnet else None
 
 
@@ -622,6 +652,7 @@ def startup_config_inject(child_stdin):
 def main():
     ensure_workspace_dir()
     prune_stale_sessions()
+    expose_dotnet()
     real = ensure_server()
     if not real:
         sys.stderr.write(
@@ -632,7 +663,8 @@ def main():
         sys.exit(127)
     command = server_command(real)
     if not command:
-        sys.stderr.write(f"dotrush: {real} runs on the dotnet host, and there is no dotnet on PATH or in DOTNET_ROOT.\n")
+        sys.stderr.write(f"dotrush: {real} runs on the dotnet host, and there is no dotnet on PATH, in DOTNET_ROOT or in "
+                         f"{', '.join(DOTNET_DIRS)}.\n")
         sys.exit(127)
 
     log(f"proxy start: exec {' '.join(command)}")

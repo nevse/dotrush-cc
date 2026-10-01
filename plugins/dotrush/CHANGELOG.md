@@ -1,5 +1,14 @@
 # Changelog
 
+### 0.8.4
+- `dotnet` is also looked for in the standard install dirs (`~/.dotnet`, `/usr/local/share/dotnet`,
+  `/opt/homebrew/bin`, `/usr/share/dotnet`, `/usr/lib/dotnet`) after `PATH` and `DOTNET_ROOT`, by the proxy, the
+  installer, the CLI wrapper and the profiling helper. A Claude Code started with a GUI environment (the Dock, the
+  desktop app, a terminal's launcher) has no `dotnet` on `PATH`, and the proxy exited 127, so Claude Code gave up
+  on the server after its restarts with only "crashed with exit code 127". When the host is found off `PATH`, the
+  proxy puts it on `PATH` and in `DOTNET_ROOT` for the installer and the server, so a build from source and the
+  MSBuild that DotRush starts find the same SDK. The proxy also honors `DOTRUSH_DOTNET` now, as the scripts did.
+
 ### 0.8.3
 - The proxy forwards only the errors and warnings of each `textDocument/publishDiagnostics` to Claude Code (and
   diagnostics without a severity, which Claude Code takes for errors). Claude Code filters no severity itself, so
