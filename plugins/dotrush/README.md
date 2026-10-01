@@ -199,13 +199,14 @@ DotRush sends analysis results only as `textDocument/publishDiagnostics` notific
 does show the model newly published diagnostics, including for files it never opened, but only the ones it has not
 shown before, at most 10 per file and 30 in all, and with no sign of when the analysis finished. So the proxy mirrors
 every publish into `diagnostics.json` in the session dir: the latest list per file, a publish count and the time of
-the last one. That file is the complete current set the skill reports from.
+the last one. That file is the complete current set the skill reports from. `scripts/dotrush-diagnostics.sh solution`
+records the count, injects the request, and waits until the count moves and publishing has been quiet for two
+seconds, because DotRush signals no completion.
 
 What the proxy forwards to Claude Code is only the errors and warnings of each publish (and any diagnostic without a
 severity, which Claude Code takes for an error). Claude Code filters no severity itself, so style suggestions such as
 IDE0058 or IDE0130 used to arrive after every LSP call on files Claude had only read, and could use up those 30 slots
-before another file's errors. Info and hint diagnostics stay in `diagnostics.json`. `scripts/dotrush-diagnostics.sh solution` records the count, injects the request, and waits until the
-count moves and publishing has been quiet for two seconds, because DotRush signals no completion.
+before another file's errors. Info and hint diagnostics stay in `diagnostics.json`.
 
 ```bash
 "$PLUGIN/scripts/dotrush-diagnostics.sh" where          # dir, workspace, proxy, load, target, publishes, channel
@@ -215,7 +216,11 @@ count moves and publishing has been quiet for two seconds, because DotRush signa
 
 What to expect:
 - Only **compiler** diagnostics (with suppressors applied); analyzer packages are not part of a solution run.
-- Hints are counted but not listed; `summarize-diagnostics.py --hints` lists them.
+- Hints are counted but not listed; `summarize-diagnostics.py --hints` lists them. `Files:` counts every file with a
+  diagnostic, hints included.
+- A project with several target frameworks reports a diagnostic once per framework (its source reads
+  `Core(net10.0)`, `Core(net11.0)`). The summary lists it once with the frameworks after the message,
+  `bad [net10.0, net11.0]`, and counts it once.
 - DotRush publishes only files with diagnostics or that just lost them, so a clean solution publishes nothing and
   `solution` exits 3 after `DOTRUSH_DIAGNOSTICS_TIMEOUT` (default 300 s) — as does an analysis still running.
 - Any later analysis replaces the set: once Claude Code opens or edits a file, DotRush re-analyzes that document

@@ -77,9 +77,6 @@ case "$command" in
       exec python3 "$SCRIPT_DIR/summarize-diagnostics.py" "$dir/diagnostics.json" --root "$workspace" --count "$count"
     fi
     require_live_proxy "$dir"
-    if [[ ! -f "$dir/target.json" && ! -f "$workspace/dotrush.config.json" ]]; then
-      echo "dotrush: no project chosen for this session; DotRush analyzes only what it loaded on its own" >&2
-    fi
     baseline="$(publishes "$dir/diagnostics.json")"
     inject "$dir/inject.fifo" '{"method":"dotrush/solutionDiagnostics","params":{}}'
     exec python3 "$SCRIPT_DIR/summarize-diagnostics.py" "$dir/diagnostics.json" --root "$workspace" --count "$count" \

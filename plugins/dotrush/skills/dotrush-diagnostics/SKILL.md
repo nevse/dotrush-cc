@@ -37,8 +37,9 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 3. Read the output:
 
    - Claude Code may also show a `new-diagnostics` block after the run. It lists only diagnostics it has not shown before (so files already reported are missing from it) and includes the hints. Report from this script's output, which is the complete current set.
-   - If every diagnostic appears exactly twice, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
-   - The first line counts files and diagnostics by severity. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
+   - A diagnostic followed by `[net10.0, net11.0]` comes from a project built for several target frameworks; it is listed and counted once. That is normal, not a duplicate.
+   - If every diagnostic appears exactly twice with no framework list, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
+   - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
    - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` to the summarizer only when the user asks for them (see step 4).
    - **Exit status 3** means nothing was published before the timeout. DotRush publishes only files that have diagnostics or that just lost them, so this is what a clean solution looks like on a first run — but it is also what a still-running or cancelled analysis looks like. Say both, and suggest a larger timeout for a big solution before calling it clean.
 
