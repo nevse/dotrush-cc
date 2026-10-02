@@ -185,6 +185,28 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
+    public void A_session_id_never_falls_back_to_a_workspace_dir_whose_proxy_is_gone()
+    {
+        // An old per-workspace dir's leftovers, while this session's server has not started yet.
+        MakeDir("0123456789ab", new(Workspace: project, Pid: DeadPid, Responses: false, LoadCompleted: false,
+            Diagnostics: null));
+
+        var result = Run(Env(sessionId: "session-z"), null, "session");
+
+        Assert.Equal(1, result.Exit);
+        Assert.StartsWith("dotrush-cli: no DotRush language server has started in this session", result.Stderr);
+    }
+
+    [Fact]
+    public void Without_a_session_id_a_workspace_dir_whose_proxy_is_gone_is_still_found()
+    {
+        // Its last results stay readable with `report` after the proxy ends.
+        var hashed = MakeDir("0123456789ab", new(Workspace: project, Pid: DeadPid));
+
+        Assert.Equal((0, hashed + "\n", ""), Run(Env(), null, "session", "--dir"));
+    }
+
+    [Fact]
     public void With_several_matches_the_dir_with_a_live_pid_wins()
     {
         var live = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "same", Pid: LivePid));
@@ -387,7 +409,7 @@ public sealed class SessionTests : IDisposable
         var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
 
         Assert.Equal((1, null,
-            "dotrush-cli: DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry\n"),
+            "dotrush-cli: DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)\n"),
             (exit, session, stderr));
     }
 

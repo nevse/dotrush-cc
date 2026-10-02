@@ -17,7 +17,8 @@ paths:
 - `Program`'s usage table is the CLI's contract: `SkillCommandTests` checks every `dotrush-cli.sh …` line and every
   quoted CLI message in a `SKILL.md` against it and the CLI's string literals. Update both together.
 - Changing any file under `plugins/dotrush/tools/` changes the source hash, so the wrapper builds a new CLI.
-- Session lookup lives only in the CLI (`Session.Find`). Bash callers run `dotrush-cli.sh session --dir`; never
+- Session lookup lives only in the CLI (`Session.Find`). With a session id it falls back to a per-workspace dir only
+  when that dir's proxy is alive; a dead one is an old session's leftovers and must read as "no server started". Bash callers run `dotrush-cli.sh session --dir`; never
   re-scan `ws/` from a script.
 - A request line must reach the FIFO in one write (`PIPE_BUF`), and .NET cannot open a FIFO non-blocking, so the
   open and write run on a background task with a 2 s timeout; check the proxy's pid first.

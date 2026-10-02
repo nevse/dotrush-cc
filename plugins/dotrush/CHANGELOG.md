@@ -1,5 +1,18 @@
 # Changelog
 
+### 0.8.9
+- With a session id, the session lookup falls back to an old per-workspace runtime dir only when its proxy is
+  still running. Before this session's server started, `where` showed a dead per-workspace dir from an earlier
+  plugin version instead: `proxy: not running`, `publishes: no capture (older proxy)`, which the
+  `dotrush-diagnostics` skill reads as "restart Claude Code". It now says `no DotRush language server has
+  started in this session`, and the skill says to run an LSP operation. Without a session id nothing changes.
+- `dotrush-diagnostics.sh report` and `solution` take `--hints`, before or after the count, and refuse an extra
+  argument. `report N --hints` was silently ignored, while the summary said to pass `--hints`. The skill's re-read
+  step uses `report 500 --hints` instead of a summarizer command that needed the session dir copied from `where`.
+- "DotRush has not finished loading" now tells to wait and re-check `where`. It also offered `dotrush-pick-project`,
+  which no longer applies: since 0.8.5 the load completes even when no project is found, which `where` and the
+  refusal for an empty load report separately.
+
 ### 0.8.8
 - The `dotrush-diagnostics` skill's re-read command passes `--count 500`; without it the summarizer lists 50 rows,
   so asking for the hints showed 50 of 151. The skill now says what `--count` does and that `report N` and

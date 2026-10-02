@@ -201,7 +201,7 @@ public sealed class LspChannelTests : IDisposable
         var result = proxy.Run("request", "textDocument/hover", HoverParams);
 
         Assert.Equal((1, "",
-            "dotrush-cli: DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry\n"),
+            "dotrush-cli: DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)\n"),
             result);
         AssertNothingSent();
     }
