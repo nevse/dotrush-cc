@@ -1,5 +1,11 @@
 # Changelog
 
+### 0.8.11
+- The `dotrush-diagnostics` skill no longer calls analyzer findings after a file was opened "usually info": they
+  came as hints too (`IDE0005`), which a plain `report` only counts, so the skill now says to pass `--hints` to see
+  them. It also says that such a `report` holds at most the last file analyzed, so its `No diagnostics.` is about
+  that file, not the solution, and that `CS8019` and `IDE0005` on one `using` are two findings, not a double load.
+
 ### 0.8.10
 - The diagnostics summary always prints its `By code` table, over every diagnostic, hints included. A hint-only
   result printed none without `--hints`, though the `dotrush-diagnostics` skill says the table covers everything
