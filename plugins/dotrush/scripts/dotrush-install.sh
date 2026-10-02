@@ -11,8 +11,9 @@ DOTRUSH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTRUSH_PIN_FILE="$DOTRUSH_LIB_DIR/../dotrush-version.json"
 DOTRUSH_COMPONENTS="server diagnostics"
 
+# A script that sources this file sets DOTRUSH_PROG (unexported) so its own errors carry its name.
 dotrush_fail() {
-  echo "dotrush-install: $*" >&2
+  echo "${DOTRUSH_PROG:-dotrush-install}: $*" >&2
   exit 1
 }
 

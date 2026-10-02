@@ -2146,7 +2146,9 @@ class DiagnosticsTests(unittest.TestCase):
 
         # The hint-only file counts too, so --hints never changes the file count.
         self.assertIn("Files: 4  Errors: 1  Warnings: 2  Infos: 1  Hints: 1", result.stdout)
-        self.assertNotIn("CS8019", result.stdout)
+        self.assertNotIn("CS8019", "\n".join(section(result.stdout, "Diagnostics (errors first):")))
+        # The per-code table covers the hidden hints too, like the counts.
+        self.assertIn("      1  hint     CS8019", section(result.stdout, "By code:"))
         self.assertIn("1 hint hidden; pass --hints to list", result.stdout)
         self.assertIn("/obj/Generated.cs:2:1  hint  CS8019", with_hints.stdout)
         self.assertIn("      2  warning  CS0219", result.stdout)
@@ -2288,11 +2290,12 @@ class DiagnosticsTests(unittest.TestCase):
         extra = self.run_driver("report", "5", "6")
 
         self.assertIn("Only hints; pass --hints to list them.", plain.stdout)
+        self.assertEqual(section(plain.stdout, "By code:"), ["      1  hint     CS8019"])
         for result in (after, before):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("U.cs:1:1  hint  CS8019  Unnecessary", result.stdout)
         self.assertNotEqual(extra.returncode, 0)
-        self.assertIn("unexpected argument: 6", extra.stderr)
+        self.assertIn("dotrush-diagnostics: unexpected argument: 6", extra.stderr)
 
     def test_where_prints_the_session_state_and_whether_the_request_channel_is_available(self):
         ws = self.session(os.getpid())
