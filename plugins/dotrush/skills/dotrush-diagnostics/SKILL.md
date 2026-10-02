@@ -38,9 +38,9 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 3. Read the output:
 
    - Claude Code may also show a `new-diagnostics` block after the run. It holds only errors and warnings it has not shown before (so files already reported are missing from it), at most 30, and a multi-targeted project's error appears there once per framework. Report from this script's output, which is the complete current set.
-   - A diagnostic followed by a bracketed list was reported by several sources and is listed and counted once: `[net10.0, net11.0]` means one project built for several target frameworks, `[Core.Tests(net10.0, net11.0), Tests]` means a file several projects compile, such as a package's `Program.cs`. That is normal, not a duplicate.
+   - A diagnostic followed by a bracketed list was reported by several sources and is listed and counted once: `[net10.0, net11.0]` means one project built for several target frameworks, `[App.Core.Tests(net10.0, net11.0), App.Tests]` means a file several projects compile, such as a package's `Program.cs`. Projects appear under their full names, sorted, each with its frameworks when it has several. That is normal, not a duplicate.
    - If every diagnostic appears exactly twice as two identical rows, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
-   - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `Publishes:` is the server's running total of `publishDiagnostics` since it started, not a per-run figure; it only shows that results arrived. `By code` ranks codes by occurrence. The list is sorted errors first, then by path, with 1-based `line:column` positions relative to the workspace.
+   - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `Publishes:` is the server's running total of `publishDiagnostics` since it started, not a per-run figure; it only shows that results arrived. `By code` ranks codes by occurrence. The list is sorted errors first, then by path. Paths are relative to the workspace, except a file outside it (one from a NuGet package, say), which keeps its absolute path and sorts first; `line:column` positions are 1-based.
    - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` to the summarizer only when the user asks for them (see step 4).
    - **Exit status 0** means the run finished and reported, errors or not; it is a report, not a pass/fail check. Read `Errors:` for that.
    - **Exit status 3** means nothing was published before the timeout. DotRush publishes only files that have diagnostics or that just lost them, so this is what a clean solution looks like on a first run — but it is also what a still-running or cancelled analysis looks like. Say both, and suggest a larger timeout for a big solution before calling it clean.
@@ -49,10 +49,10 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" report 200
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/summarize-diagnostics.py" <DIR>/diagnostics.json --hints --root <WORKSPACE>
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/summarize-diagnostics.py" <DIR>/diagnostics.json --hints --root <WORKSPACE> --count 500
    ```
 
-   `DIR` and `WORKSPACE` are the `dir:` and `workspace:` lines of `where`.
+   `DIR` and `WORKSPACE` are the `dir:` and `workspace:` lines of `where`. `--count` (default 50) is how many rows the summarizer lists, and `report N` and `solution N` pass N as it; past it the list ends with `... K more; pass a larger count`. The counts above the list always cover everything.
 
 5. Report the totals, the most frequent codes, and the errors with their locations. Group repeated codes rather than listing each occurrence. For each error you explain, read the source at that location rather than guessing from the message.
 

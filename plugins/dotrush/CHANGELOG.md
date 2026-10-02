@@ -1,5 +1,13 @@
 # Changelog
 
+### 0.8.8
+- The `dotrush-diagnostics` skill's re-read command passes `--count 500`; without it the summarizer lists 50 rows,
+  so asking for the hints showed 50 of 151. The skill now says what `--count` does and that `report N` and
+  `solution N` pass it.
+- The skill says that paths, not positions, are relative to the workspace, and that a file outside it (a NuGet
+  package's) keeps its absolute path; its example of a multi-project label uses full project names, as the
+  summary prints them.
+
 ### 0.8.7
 - The diagnostics summary also merges a diagnostic that several projects report for one file, such as the
   `Microsoft.NET.Test.Sdk` `Program.cs` every test project compiles, and names them after the message
