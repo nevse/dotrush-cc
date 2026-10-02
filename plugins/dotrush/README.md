@@ -212,11 +212,12 @@ before another file's errors. Info and hint diagnostics stay in `diagnostics.jso
 "$PLUGIN/scripts/dotrush-diagnostics.sh" where          # dir, workspace, proxy, load, target, publishes, channel
 "$PLUGIN/scripts/dotrush-diagnostics.sh" solution 100   # analyze, wait, list up to 100 diagnostics
 "$PLUGIN/scripts/dotrush-diagnostics.sh" report         # last published results, no analysis
+"$PLUGIN/scripts/dotrush-diagnostics.sh" report 500 --hints   # the same, hints listed too
 ```
 
 What to expect:
 - Only **compiler** diagnostics (with suppressors applied); analyzer packages are not part of a solution run.
-- Hints are counted but not listed; `summarize-diagnostics.py --hints` lists them. `Files:` counts every file with a
+- Hints are counted but not listed; `--hints` (to `solution` or `report`) lists them. `Files:` counts every file with a
   diagnostic, hints included.
 - A project with several target frameworks reports a diagnostic once per framework (its source reads
   `Core(net10.0)`, `Core(net11.0)`), and a file several projects compile (a package's `Program.cs` in every test

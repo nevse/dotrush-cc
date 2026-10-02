@@ -17,15 +17,15 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" where
    ```
 
-   - `no DotRush language server has started` — run any C# LSP operation first (for example `documentSymbol` on a `.cs` file in the project), then retry.
-   - `load: not completed` — DotRush has not finished its first project load, and it starts code analysis only after that; `solution` refuses to run. If a project was just chosen, wait for the load and re-check. If the project was switched with a `dotrush/reloadWorkspace` before any load completed, analysis will not start in this server: tell the user to restart Claude Code.
+   - `no DotRush language server has started` — run any C# LSP operation first (for example `documentSymbol` on a `.cs` file in the project), then retry. That first operation may answer "No symbols found" while the workspace is still loading; that is not a missing project, so run `where` again instead of picking one.
+   - `load: not completed` — DotRush is still loading the workspace, and it starts code analysis only after that; `solution` refuses to run. Wait a few seconds and re-check; a large solution takes longer. If the project was switched with a `dotrush/reloadWorkspace` before any load completed, analysis will not start in this server: tell the user to restart Claude Code.
    - `load: completed with no project` — no project was chosen, and DotRush found no single solution or project in the workspace to load on its own, so `solution` refuses to run. Run the `dotrush-pick-project` skill, then re-check.
    - `load: completed (N projects)` — ready; N is how many projects DotRush loaded. A proxy from before 0.8.7 prints `load: completed` without the count.
    - `target: none chosen` — normal when the workspace holds a single solution (or a single project) or a `dotrush.config.json`: DotRush loads that on its own. The `load:` line says whether it did.
    - `publishes: no capture (older proxy)` — the language server started before the plugin was updated. Tell the user to restart Claude Code; do not try to work around it.
    - `channel: unavailable (older proxy)` — the proxy predates the request channel that plugin tools such as rename use. Diagnostics do not need it, so `solution` and `report` still work; mention a Claude Code restart only if the user also wants those tools.
    - The first `where` (or any first use of the plugin's CLI) builds that CLI once per plugin version, which takes a few seconds and prints `building the DotRush CLI` on stderr. `where`, `solution` and `report` all find the session through that CLI, so `building the DotRush CLI failed; full log: …` (or a missing `shasum`/`sha256sum`) stops all three, even `report`, which otherwise needs nothing running. That is a .NET 10 SDK problem, not a language-server one: report the tail of the log it prints.
-   - `no DotRush language server has started` while the server is plainly running usually means the session id is missing from this Bash environment: the lookup matches `DOTRUSH_SESSION_ID` or `AGTERM_SESSION_ID`, and falls back to a per-workspace directory only. Tell the user to restart Claude Code from a terminal that sets one, rather than retrying.
+   - `no DotRush language server has started` while the server is plainly running usually means the session id is missing from this Bash environment: the lookup matches `DOTRUSH_SESSION_ID` or `AGTERM_SESSION_ID`, and falls back to a per-workspace directory only (with a session id, only to one whose proxy is running). Tell the user to restart Claude Code from a terminal that sets one, rather than retrying.
 
 2. Run the analysis:
 
@@ -41,7 +41,7 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    - A diagnostic followed by a bracketed list was reported by several sources and is listed and counted once: `[net10.0, net11.0]` means one project built for several target frameworks, `[App.Core.Tests(net10.0, net11.0), App.Tests]` means a file several projects compile, such as a package's `Program.cs`. Projects appear under their full names, sorted, each with its frameworks when it has several. That is normal, not a duplicate.
    - If every diagnostic appears exactly twice as two identical rows, DotRush loaded the project twice (a project switch that raced its first load). Report the findings once and tell the user a Claude Code restart clears it.
    - The first line counts the files that have any diagnostic (hints included) and the diagnostics by severity. `Publishes:` is the server's running total of `publishDiagnostics` since it started, not a per-run figure; it only shows that results arrived. `By code` ranks codes by occurrence. The list is sorted errors first, then by path. Paths are relative to the workspace, except a file outside it (one from a NuGet package, say), which keeps its absolute path and sorts first; `line:column` positions are 1-based.
-   - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` to the summarizer only when the user asks for them (see step 4).
+   - Hints (mostly `CS8019` unnecessary usings, many in generated `obj/` files) are counted but not listed. Pass `--hints` (to `solution` or `report`) only when the user asks for them (see step 4).
    - **Exit status 0** means the run finished and reported, errors or not; it is a report, not a pass/fail check. Read `Errors:` for that.
    - **Exit status 3** means nothing was published before the timeout. DotRush publishes only files that have diagnostics or that just lost them, so this is what a clean solution looks like on a first run — but it is also what a still-running or cancelled analysis looks like. Say both, and suggest a larger timeout for a big solution before calling it clean.
 
@@ -49,10 +49,10 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" report 200
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/summarize-diagnostics.py" <DIR>/diagnostics.json --hints --root <WORKSPACE> --count 500
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" report 500 --hints
    ```
 
-   `DIR` and `WORKSPACE` are the `dir:` and `workspace:` lines of `where`. `--count` (default 50) is how many rows the summarizer lists, and `report N` and `solution N` pass N as it; past it the list ends with `... K more; pass a larger count`. The counts above the list always cover everything.
+   The number (default 50) is how many rows are listed; past it the list ends with `... K more; pass a larger count`. The counts above the list always cover everything. `--hints` also lists the hints; `solution` takes the same two arguments.
 
 5. Report the totals, the most frequent codes, and the errors with their locations. Group repeated codes rather than listing each occurrence. For each error you explain, read the source at that location rather than guessing from the message.
 

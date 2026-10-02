@@ -119,7 +119,7 @@ public static class Session
             : !found.HasChannel
                 ? "the running DotRush proxy predates the request channel; restart Claude Code"
             : !found.LoadCompleted
-                ? "DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry"
+                ? "DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)"
             : found.LoadedNothing
                 ? "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"
             : null;
@@ -155,7 +155,9 @@ public static class Session
     //    Claude process in one agterm tab shares, also one whose claude-pid is CLAUDE_PID (or that has no
     //    claude-pid, written by a proxy from before it was recorded);
     // 2. otherwise, or when none does, a dir without the sess- prefix whose workspace.txt is the project
-    //    dir (CLAUDE_PROJECT_DIR, else the cwd), so another session's dir is never picked;
+    //    dir (CLAUDE_PROJECT_DIR, else the cwd), so another session's dir is never picked. With a session id
+    //    only a live one counts: that is a proxy from before session dirs, while a dead one is an old
+    //    session's leftovers, and this session's server has simply not started yet;
     // 3. among several, a live pid first, then the newest pid file.
     static string? Find(string ws, IReadOnlyDictionary<string, string?> env, string cwd)
     {
@@ -186,6 +188,7 @@ public static class Session
             matches = dirs
                 .Where(dir => !IsSessionDir(dir) && HasLine(Path.Combine(dir, "workspace.txt"),
                     line => line == workspace || (realWorkspace is not null && Posix.RealPath(line) == realWorkspace)))
+                .Where(dir => sessionId is null || new SessionState(dir).IsProxyRunning)
                 .ToArray();
         }
         return matches

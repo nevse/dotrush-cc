@@ -2278,6 +2278,22 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("B.cs:2:3  warning  CS0219  unused", result.stdout)
 
+    def test_report_passes_hints_on_in_either_position_and_refuses_extra_arguments(self):
+        ws = self.session(dead_pid())
+        self.write_store(ws / "diagnostics.json", {(self.root / "U.cs").as_uri(): [diagnostic(0, 0, 4, "CS8019", "Unnecessary")]})
+
+        plain = self.run_driver("report")
+        after = self.run_driver("report", "5", "--hints")
+        before = self.run_driver("report", "--hints", "5")
+        extra = self.run_driver("report", "5", "6")
+
+        self.assertIn("Only hints; pass --hints to list them.", plain.stdout)
+        for result in (after, before):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("U.cs:1:1  hint  CS8019  Unnecessary", result.stdout)
+        self.assertNotEqual(extra.returncode, 0)
+        self.assertIn("unexpected argument: 6", extra.stderr)
+
     def test_where_prints_the_session_state_and_whether_the_request_channel_is_available(self):
         ws = self.session(os.getpid())
 
@@ -2304,10 +2320,11 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no DotRush language server has started", result.stderr)
 
-        # A proxy started without a session id is still found by its workspace.
+        # A running proxy started without a session id is still found by its workspace.
         shared = self.root / "data/ws/0123456789ab"
         shared.mkdir()
         (shared / "workspace.txt").write_text(f"{self.root}\n")
+        (shared / "pid").write_text(f"{os.getpid()}\n")
         found = self.run_driver("where", **other)
         self.assertEqual(found.returncode, 0, found.stderr)
         self.assertEqual(found.stdout.splitlines()[0], f"dir: {shared}")
@@ -2333,7 +2350,7 @@ class DiagnosticsTests(unittest.TestCase):
         result = self.run_driver("solution")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("has not finished loading a project", result.stderr)
+        self.assertIn("has not finished loading the workspace", result.stderr)
         self.assertIn("load: not completed", self.run_driver("where").stdout)
 
     def test_solution_refuses_a_load_that_found_no_project(self):

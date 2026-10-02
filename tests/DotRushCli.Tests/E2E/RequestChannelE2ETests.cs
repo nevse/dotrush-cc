@@ -47,7 +47,7 @@ public sealed partial class RequestChannelE2ETests(DotRushServerFixture server) 
         var lines = result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.Contains($"dir: {server.SessionDir}", lines);
         Assert.Contains(lines, line => RunningProxy().IsMatch(line));
-        Assert.Contains("load: completed", lines);
+        Assert.Contains("load: completed (1 project)", lines);
         Assert.Contains("channel: available", lines);
         var built = Directory.GetDirectories(Path.Combine(server.DataDir, "cli"));
         Assert.Contains(built, dir => File.Exists(Path.Combine(dir, "DotRushCli.dll")));

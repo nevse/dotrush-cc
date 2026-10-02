@@ -74,7 +74,7 @@ Every error goes to stderr prefixed with `dotrush-cli: `. Exit status: 1 error, 
 - `no DotRush language server has started in this session (looked in …); run any C# LSP operation first` — run an LSP operation (for example `documentSymbol` on a `.cs` file in the project), then retry.
 - `the DotRush language server for this session is not running; run any C# LSP operation to start it` — same: start it with an LSP operation, then retry.
 - `the running DotRush proxy predates the request channel; restart Claude Code` — the language server started before the plugin was updated. Tell the user to restart Claude Code. Do not fall back to a text search-and-replace unless the user asks for one.
-- `DotRush has not finished loading a project in this session; choose one with dotrush-pick-project, or wait for the load to finish and retry` — if no project was chosen, run the `dotrush-pick-project` skill; if one was just chosen, wait a little and retry.
+- `DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)` — the server is still loading; wait a few seconds and retry. A large solution takes longer.
 - `cannot write to the proxy's FIFO …` — the proxy is not taking requests. Retry once; if it persists, tell the user to restart Claude Code.
 
 **Preview:**
