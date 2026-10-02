@@ -123,16 +123,21 @@ def report(data, root, count, hints=False):
         + "  ".join(f"{name.capitalize()}s: {severities.get(name, 0)}" for name in SEVERITIES.values()),
         f"Publishes: {data.get('publishes', 0)}",
     ]
-    if not shown:
+    if not rows:
         out.append("")
-        out.append("No diagnostics." if not rows else "Only hints; pass --hints to list them.")
+        out.append("No diagnostics.")
         return "\n".join(out)
 
-    codes = Counter((code_of_row, SEVERITIES.get(sev, "error")) for sev, _, _, _, code_of_row, _ in shown)
+    # Like the counts above it, the table covers every diagnostic, hints included, listed or not.
+    codes = Counter((code_of_row, SEVERITIES.get(sev, "error")) for sev, _, _, _, code_of_row, _ in rows)
     out.append("")
     out.append("By code:")
     for (code, severity), n in sorted(codes.items(), key=lambda kv: (-kv[1], kv[0])):
         out.append(f"  {n:>5}  {severity:<7}  {code}")
+    if not shown:
+        out.append("")
+        out.append("Only hints; pass --hints to list them.")
+        return "\n".join(out)
 
     out.append("")
     out.append("Diagnostics (errors first):")

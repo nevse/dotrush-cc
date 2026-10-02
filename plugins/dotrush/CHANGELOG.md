@@ -1,5 +1,15 @@
 # Changelog
 
+### 0.8.10
+- The diagnostics summary always prints its `By code` table, over every diagnostic, hints included. A hint-only
+  result printed none without `--hints`, though the `dotrush-diagnostics` skill says the table covers everything
+  and asks for the most frequent codes.
+- `dotrush-diagnostics.sh` errors start with `dotrush-diagnostics:`; they read `dotrush-install:`, from the shared
+  install helper.
+- The `dotrush-diagnostics` skill gives a polling command for `load: not completed`, documents exit statuses 1 and
+  2 and `DOTRUSH_DIAGNOSTICS_QUIET`, says both `solution` arguments are optional and go in either order, and says
+  that a `report` after a file was opened can hold analyzer rules (`CA…`, `IDE…`) a solution run does not.
+
 ### 0.8.9
 - With a session id, the session lookup falls back to an old per-workspace runtime dir only when its proxy is
   still running. Before this session's server started, `where` showed a dead per-workspace dir from an earlier
