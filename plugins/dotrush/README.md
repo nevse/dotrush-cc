@@ -221,7 +221,8 @@ What to expect:
 - A project with several target frameworks reports a diagnostic once per framework (its source reads
   `Core(net10.0)`, `Core(net11.0)`), and a file several projects compile (a package's `Program.cs` in every test
   project) once per project. The summary lists each such diagnostic once with its sources after the message,
-  `bad [net10.0, net11.0]` or `unused [Core.Tests(net10.0, net11.0), Tests]`, and counts it once.
+  `bad [net10.0, net11.0]` or `unused [App.Core.Tests(net10.0, net11.0), App.Tests]` (full project names, sorted),
+  and counts it once.
 - `solution` exits 0 whenever it reports, errors included; `Errors:` is the pass/fail figure. `Publishes:` is the
   server's running total, not the count for this run.
 - DotRush publishes only files with diagnostics or that just lost them, so a clean solution publishes nothing and
