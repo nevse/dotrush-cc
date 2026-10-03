@@ -47,7 +47,7 @@ require_live_proxy() {
   # DotRush also completes a load that found nothing to load, and a chosen project can fail to load. The last load's
   # count is what is loaded now; without it the total stands in, and a missing total is a proxy that predates it.
   if [[ "$(cat "$dir/last-load-projects" 2>/dev/null || true)" == 0 ]]; then
-    dotrush_fail "DotRush loaded no project in its last load; look for errors in $dir/proxy.log, or choose another with dotrush-pick-project"
+    dotrush_fail "DotRush loaded no project in its last load; dotrush-diagnostics.sh report shows what DotRush reported about it (such as a failed restore), or choose another project with dotrush-pick-project"
   fi
   [[ -f "$dir/last-load-projects" || "$(cat "$dir/projects-loaded" 2>/dev/null || true)" != "0" ]] \
     || dotrush_fail "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"

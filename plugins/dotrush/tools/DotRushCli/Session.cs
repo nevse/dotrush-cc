@@ -99,7 +99,7 @@ public static class SessionCommand
         stdout.WriteLine($"workspace: {session.Workspace ?? "unknown"}");
         stdout.WriteLine(session.IsProxyRunning ? $"proxy: running (pid {session.Pid})" : "proxy: not running");
         stdout.WriteLine(
-            session.LastLoadFailed ? "load: completed with no project (the last load loaded none; its errors are in proxy.log)"
+            session.LastLoadFailed ? "load: completed with no project (the last load loaded none; see dotrush-diagnostics.sh report)"
             : session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
             : session.LoadCompleted
                 ? session.CurrentProjects is { } projects
@@ -133,7 +133,7 @@ public static class Session
             : !found.LoadCompleted
                 ? "DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)"
             : found.LastLoadFailed
-                ? $"DotRush loaded no project in its last load; look for errors in {Path.Combine(found.Dir, "proxy.log")}, or choose another with dotrush-pick-project"
+                ? "DotRush loaded no project in its last load; dotrush-diagnostics.sh report shows what DotRush reported about it (such as a failed restore), or choose another project with dotrush-pick-project"
             : found.LoadedNothing
                 ? "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"
             : null;

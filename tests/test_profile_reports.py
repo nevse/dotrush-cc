@@ -2395,7 +2395,7 @@ class DiagnosticsTests(unittest.TestCase):
         result = self.run_driver("solution")
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn(f"dotrush-diagnostics: DotRush loaded no project in its last load; look for errors in {ws}/proxy.log",
+        self.assertIn("dotrush-diagnostics: DotRush loaded no project in its last load; dotrush-diagnostics.sh report shows what DotRush reported about it (such as a failed restore)",
                       result.stderr)
         self.assertIn("the last load loaded none", self.run_driver("where").stdout)
 

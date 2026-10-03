@@ -437,7 +437,7 @@ public sealed class SessionTests : IDisposable
         var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
 
         Assert.Equal((1, null,
-            $"dotrush-cli: DotRush loaded no project in its last load; look for errors in {Path.Combine(dir, "proxy.log")}, or choose another with dotrush-pick-project\n"),
+            "dotrush-cli: DotRush loaded no project in its last load; dotrush-diagnostics.sh report shows what DotRush reported about it (such as a failed restore), or choose another project with dotrush-pick-project\n"),
             (exit, session, stderr));
     }
 
@@ -508,7 +508,7 @@ public sealed class SessionTests : IDisposable
         var (exit, stdout, _) = Run(Env(sessionId: "session-a"), null, "session");
 
         Assert.Equal(0, exit);
-        Assert.Contains("load: completed with no project (the last load loaded none; its errors are in proxy.log)\n", stdout);
+        Assert.Contains("load: completed with no project (the last load loaded none; see dotrush-diagnostics.sh report)\n", stdout);
     }
 
     [Theory]

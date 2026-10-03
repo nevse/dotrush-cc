@@ -68,7 +68,8 @@ LSP restarts, so within a session it's asked only once.
      - `not waited: the running DotRush proxy is older`: this session's proxy does not count loads. Tell the user
        a Claude Code restart brings that in, wait about 10 seconds, then do step 6.
    - It exits 1 with an error: report it. The path was not absolute or does not exist, the FIFO write failed, the
-     load finished without loading a project (the error names `proxy.log` to read), or the server stopped or
+     load finished without loading a project (run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" report`
+     and report the errors on the project or solution file, such as a failed restore), or the server stopped or
      restarted while loading.
 
 6. **Verify** — run an LSP `documentSymbol` on a `.cs` file from the chosen project. Symbols back → success.

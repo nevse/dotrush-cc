@@ -90,7 +90,7 @@ wait_for_load() {
       projects=$(( $(cat "$dir/projects-loaded" 2>/dev/null || echo "$base_projects") - base_projects ))
       rm -f "$dir/pick-wait"
       (( projects > 0 )) \
-        || dotrush_fail "DotRush finished the load without loading a project; look for errors in $dir/proxy.log"
+        || dotrush_fail "DotRush finished the load without loading a project; dotrush-diagnostics.sh report shows what DotRush reported about it (such as a failed restore)"
       echo "loaded: $projects project$( (( projects == 1 )) || echo s)"
       return
     fi

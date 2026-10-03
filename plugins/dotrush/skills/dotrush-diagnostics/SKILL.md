@@ -25,7 +25,7 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
      ```
 
      If the project was switched with a `dotrush/reloadWorkspace` before any load completed, analysis will not start in this server: tell the user to restart Claude Code.
-   - `load: completed with no project` — nothing is loaded, so `solution` refuses to run. `(none chosen, …)`: no project was chosen, and DotRush found no single solution or project in the workspace to load on its own; run the `dotrush-pick-project` skill, then re-check. `(the last load loaded none; …)`: the chosen project failed to load; read the end of `proxy.log` in the `dir:` shown, report the errors, and offer to pick another project.
+   - `load: completed with no project` — nothing is loaded, so `solution` refuses to run. `(none chosen, …)`: no project was chosen, and DotRush found no single solution or project in the workspace to load on its own; run the `dotrush-pick-project` skill, then re-check. `(the last load loaded none; …)`: the chosen project failed to load. Run `report` (it works without a loaded project) and give the user the errors on the project or solution file, such as a failed restore (`NU0000`), then offer to pick another project.
    - `load: completed (N projects)` — ready; N is how many projects DotRush loaded. A proxy from before 0.8.7 prints `load: completed` without the count.
    - `target: none chosen` — normal when the workspace holds a single solution (or a single project) or a `dotrush.config.json`: DotRush loads that on its own. The `load:` line says whether it did.
    - `publishes: no capture (older proxy)` — the language server started before the plugin was updated. Tell the user to restart Claude Code; do not try to work around it.

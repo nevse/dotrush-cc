@@ -1,5 +1,11 @@
 # Changelog
 
+### 0.8.16
+- When a chosen project loads nothing, the errors from `dotrush-pick-project.sh`, `where`, `solution` and the request
+  channel point to `dotrush-diagnostics.sh report` instead of `proxy.log`. DotRush reports why a project failed,
+  such as a failed restore (`NU0000`), as a diagnostic on the project file, which `report` shows; `proxy.log` has
+  only message names. Both skills say to run `report` and give the user those errors.
+
 ### 0.8.15
 - A switch to a project that fails to load now reads as nothing loaded. The checks used the total of every load,
   so after an earlier load had found projects, `where` said `load: completed (0 projects)` and `solution` and the
