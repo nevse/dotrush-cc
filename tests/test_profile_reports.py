@@ -1955,6 +1955,12 @@ class DiagnosticsTests(unittest.TestCase):
                                     "files": files}))
 
     def test_proxy_forwards_frames_verbatim_and_mirrors_published_diagnostics(self):
+        def progress(kind):
+            return lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": kind}}})
+
+        def project_loaded(path):
+            return lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": path}})
+
         store = self.root / "diagnostics.json"
         a, b = "file:///src/A.cs", "file:///src/B.cs"
         stream = b"".join([
@@ -1963,14 +1969,17 @@ class DiagnosticsTests(unittest.TestCase):
             lsp_frame({"jsonrpc": "2.0", "id": 7, "result": {"note": "textDocument/publishDiagnostics"}}),
             lsp_frame(publish(b, diagnostic(0, 0, 2, "CS0168", "declared"))),
             lsp_frame(publish(a)),
-            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/A.csproj"}}),
-            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/B.csproj"}}),
-            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
-            # Only the end of a progress counts as a finished workspace load.
-            lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": "begin"}}}),
+            # The first load, then a reload: only the end of a progress counts as a finished workspace load.
+            progress("begin"),
+            project_loaded("/src/A.csproj"),
             lsp_frame({"jsonrpc": "2.0", "method": "$/progress",
                        "params": {"token": "t", "value": {"kind": "report", "message": "end"}}}),
-            lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": "end"}}}),
+            project_loaded("/src/B.csproj"),
+            progress("end"),
+            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
+            progress("begin"),
+            project_loaded("/src/C.csproj"),
+            progress("end"),
         ])
         script = (
             PROXY_IMPORT
@@ -1985,8 +1994,10 @@ class DiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(result.stdout, stream)
         self.assertTrue(Path(result.stderr.decode()).is_file())
-        self.assertEqual((Path(result.stderr.decode()).parent / "projects-loaded").read_text(), "2\n")
-        self.assertEqual((Path(result.stderr.decode()).parent / "workspace-loads").read_text(), "1\n")
+        ws = Path(result.stderr.decode()).parent
+        self.assertEqual((ws / "projects-loaded").read_text(), "3\n")
+        self.assertEqual((ws / "workspace-loads").read_text(), "2\n")
+        self.assertEqual((ws / "last-load-projects").read_text(), "1\n")
         data = json.loads(store.read_text())
         self.assertEqual(data["publishes"], 3)
         self.assertEqual(list(data["files"]), [b])
@@ -2090,6 +2101,7 @@ class DiagnosticsTests(unittest.TestCase):
         (ws / "load-completed").write_text("")
         (ws / "projects-loaded").write_text("8\n")
         (ws / "workspace-loads").write_text("3\n")
+        (ws / "last-load-projects").write_text("2\n")
         script = (
             PROXY_IMPORT
             + "proxy.ensure_workspace_dir()\n"
@@ -2103,6 +2115,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse((ws / "load-completed").exists())
         self.assertEqual((ws / "projects-loaded").read_text(), "0\n")
         self.assertEqual((ws / "workspace-loads").read_text(), "0\n")
+        self.assertFalse((ws / "last-load-projects").exists())
 
     def test_an_agterm_session_dir_is_keyed_on_the_launching_claude_process(self):
         # Every Claude process started from one agterm tab (background jobs too) inherits its

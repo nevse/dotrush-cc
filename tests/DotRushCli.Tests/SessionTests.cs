@@ -38,6 +38,7 @@ public sealed class SessionTests : IDisposable
         bool Responses = true,
         bool LoadCompleted = true,
         int? ProjectsLoaded = null,
+        int? LastLoadProjects = null,
         string? Target = null,
         string? Diagnostics = """{"publishes": 0, "files": {}}""");
 
@@ -51,6 +52,8 @@ public sealed class SessionTests : IDisposable
         if (spec.Responses) Directory.CreateDirectory(Path.Combine(dir, "responses"));
         if (spec.LoadCompleted) File.WriteAllText(Path.Combine(dir, "load-completed"), "");
         if (spec.ProjectsLoaded is not null) File.WriteAllText(Path.Combine(dir, "projects-loaded"), spec.ProjectsLoaded + "\n");
+        if (spec.LastLoadProjects is not null)
+            File.WriteAllText(Path.Combine(dir, "last-load-projects"), spec.LastLoadProjects + "\n");
         if (spec.Target is not null) File.WriteAllText(Path.Combine(dir, "target.json"), spec.Target);
         if (spec.Diagnostics is not null) File.WriteAllText(Path.Combine(dir, "diagnostics.json"), spec.Diagnostics);
         return dir;
@@ -449,6 +452,18 @@ public sealed class SessionTests : IDisposable
 
         Assert.Equal(0, exit);
         Assert.Contains(expected + "\n", stdout);
+    }
+
+    [Fact]
+    public void Session_counts_the_projects_of_the_last_load_not_every_reload()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, ProjectsLoaded: 9,
+            LastLoadProjects: 5));
+
+        var (exit, stdout, _) = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("load: completed (5 projects)\n", stdout);
     }
 
     [Fact]

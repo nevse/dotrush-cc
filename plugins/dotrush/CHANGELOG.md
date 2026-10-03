@@ -1,5 +1,11 @@
 # Changelog
 
+### 0.8.14
+- `dotrush-cli.sh session` (and `dotrush-diagnostics.sh where`) counts the projects of the last load: after a switch
+  it said `load: completed (9 projects)` for a 4-project load followed by a 5-project one. The proxy writes that
+  count to `last-load-projects` in the session dir when a load ends; with an older proxy the line shows the total
+  as before.
+
 ### 0.8.13
 - `dotrush-pick-project.sh apply` waits for DotRush to finish the load it started and prints `loaded: N projects`,
   instead of the `dotrush-pick-project` skill waiting "a few seconds" before checking for symbols. It waits up to

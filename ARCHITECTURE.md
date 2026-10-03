@@ -71,6 +71,7 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 | `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, `dotrush-pick-project.sh` | removed at proxy start |
 | `projects-loaded` | proxy: `0` at start, then the count of `dotrush/projectLoaded` | CLI, diagnostics script, `dotrush-pick-project.sh` | rewritten at proxy start |
 | `workspace-loads` | proxy: `0` at start, then the count of `$/progress` ends, one per finished workspace load | `dotrush-pick-project.sh` | rewritten at proxy start |
+| `last-load-projects` | proxy at the end of each workspace load: the projects that load reported | CLI `session` | removed at proxy start |
 | `pick-wait` | `dotrush-pick-project.sh apply`: proxy pid and both counts before it sends anything | `dotrush-pick-project.sh` waits until `workspace-loads` passes it | removed when the load finishes |
 | `diagnostics.json` | proxy, coalesced every 0.5 s | diagnostics script | reset at proxy start |
 | `responses/` | proxy creates empty; `<uuid>.json` via temp + rename | CLI deletes after reading; stale after 10 min | recreated at proxy start only |

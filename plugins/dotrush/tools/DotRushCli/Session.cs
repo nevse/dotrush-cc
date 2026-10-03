@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace DotRushCli;
 
 // A per-session runtime dir as lsp-proxy.py lays it out: workspace.txt, session.txt, pid, target.json,
-// diagnostics.json, load-completed, projects-loaded and responses/. Every property reads the disk when asked.
+// diagnostics.json, load-completed, projects-loaded, last-load-projects and responses/. Every property reads the disk when asked.
 public sealed record SessionState(string Dir)
 {
     public string? Workspace => ReadTrimmed("workspace.txt");
@@ -15,8 +15,11 @@ public sealed record SessionState(string Dir)
 
     public bool LoadCompleted => File.Exists(Path.Combine(Dir, "load-completed"));
 
-    // How many projects the server reported loaded; null from a proxy that predates the count.
+    // How many projects the server reported loaded, adding up across reloads; null from a proxy that predates the count.
     public int? ProjectsLoaded => int.TryParse(ReadTrimmed("projects-loaded"), out var count) ? count : null;
+
+    // How many projects the last finished load reported; null before one finished, or from a proxy that predates it.
+    public int? LastLoadProjects => int.TryParse(ReadTrimmed("last-load-projects"), out var count) ? count : null;
 
     // DotRush completes a load that found no single solution or project, so a completed load can hold nothing.
     public bool LoadedNothing => LoadCompleted && ProjectsLoaded == 0;
@@ -90,7 +93,7 @@ public static class SessionCommand
         stdout.WriteLine(
             session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
             : session.LoadCompleted
-                ? session.ProjectsLoaded is { } projects
+                ? (session.LastLoadProjects ?? session.ProjectsLoaded) is { } projects
                     ? $"load: completed ({projects} project{(projects == 1 ? "" : "s")})" : "load: completed"
             : "load: not completed (no project loaded yet, or still loading)");
         stdout.WriteLine($"target: {session.Target ?? "none chosen"}");

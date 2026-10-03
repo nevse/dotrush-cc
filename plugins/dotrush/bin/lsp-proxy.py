@@ -98,6 +98,9 @@ PROJECTS_LOADED_FILE = os.path.join(WS_DIR, "projects-loaded")
 # and ends it when the load finishes, the first one and every dotrush/reloadWorkspace alike, so this is the only
 # per-load signal: loadCompleted comes once, and projectLoaded once per project.
 WORKSPACE_LOADS_FILE = os.path.join(WS_DIR, "workspace-loads")
+# How many projects the last finished workspace load reported, written when it ends; projects-loaded keeps adding
+# up across reloads. Missing until a load with progress has finished.
+LAST_LOAD_PROJECTS_FILE = os.path.join(WS_DIR, "last-load-projects")
 # Request channel: plugin tooling injects requests whose id is "dotrush-cc:<uuid>", and the responses land
 # here as <uuid>.json instead of reaching Claude Code. The dir existing tells tooling the channel is available.
 RESPONSES_DIR = os.path.join(WS_DIR, "responses")
@@ -301,8 +304,12 @@ def pump_server_to_client(child_stdout, diagnostics=None):
                 mark_load_completed()
             elif b == "notif    dotrush/projectLoaded":
                 count_project_loaded()
-            elif b == "notif    $/progress" and is_progress_end(body):
-                count_workspace_load()
+            elif b == "notif    $/progress":
+                kind = progress_kind(body)
+                if kind == "begin":
+                    start_workspace_load()
+                elif kind == "end":
+                    count_workspace_load()
             if not b.startswith("response"):
                 log(f"S->C {b}")
 
@@ -352,33 +359,42 @@ _projects_loaded = 0
 
 def count_project_loaded():
     """Counts one dotrush/projectLoaded and writes the total; the server->client pump is the only caller."""
-    global _projects_loaded
+    global _projects_loaded, _projects_in_load
     _projects_loaded += 1
+    _projects_in_load += 1
     try:
         write_atomically(PROJECTS_LOADED_FILE, f"{_projects_loaded}\n".encode("ascii"))
     except OSError as e:
         log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
 
 
-def is_progress_end(body):
+def progress_kind(body):
     try:
         value = json.loads(body).get("params", {}).get("value")
     except (ValueError, AttributeError):
-        return False
-    return isinstance(value, dict) and value.get("kind") == "end"
+        return None
+    return value.get("kind") if isinstance(value, dict) else None
 
 
 _workspace_loads = 0
+_projects_in_load = 0
+
+
+def start_workspace_load():
+    global _projects_in_load
+    _projects_in_load = 0
 
 
 def count_workspace_load():
-    """Counts one finished workspace load and writes the total; the server->client pump is the only caller."""
+    """Counts one finished workspace load and writes the total and its project count; the server->client pump is
+    the only caller. DotRush sends a load's projectLoaded notifications before it ends the load's progress."""
     global _workspace_loads
     _workspace_loads += 1
-    try:
-        write_atomically(WORKSPACE_LOADS_FILE, f"{_workspace_loads}\n".encode("ascii"))
-    except OSError as e:
-        log(f"cannot write {WORKSPACE_LOADS_FILE}: {e}")
+    for path, value in ((LAST_LOAD_PROJECTS_FILE, _projects_in_load), (WORKSPACE_LOADS_FILE, _workspace_loads)):
+        try:
+            write_atomically(path, f"{value}\n".encode("ascii"))
+        except OSError as e:
+            log(f"cannot write {path}: {e}")
 
 
 def pump_stderr(child_stderr):
@@ -646,12 +662,13 @@ def ensure_workspace_dir():
                 f.write(CLAUDE_PID + "\n")
     except OSError as e:
         log(f"cannot init workspace dir {WS_DIR}: {e}")
-    try:
-        os.remove(LOAD_COMPLETED_FILE)  # the server about to start has loaded nothing
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        log(f"cannot remove {LOAD_COMPLETED_FILE}: {e}")
+    for path in (LOAD_COMPLETED_FILE, LAST_LOAD_PROJECTS_FILE):  # the server about to start has loaded nothing
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log(f"cannot remove {path}: {e}")
     # Written now rather than on the first project, so a missing file means a proxy that predates the count.
     for path in (PROJECTS_LOADED_FILE, WORKSPACE_LOADS_FILE):
         try:
