@@ -55,15 +55,24 @@ LSP restarts, so within a session it's asked only once.
    - It prints `not applied live`: the language server for this session is not running yet (it may still be installing).
      The choice is saved and loads when the server starts; tell the user that and skip step 6.
    - It prints `applied: configuration sent`: the running server got the configuration. The script also sends
-     `dotrush/reloadWorkspace` (`workspace reload sent`), but only when `"$WSDIR/load-completed"` exists.
-     Without that file DotRush has not loaded a project yet: its initialization is waiting for the configuration
-     and loads the project itself as soon as it arrives, and a reload then would race that load (code analysis
-     never starts, or every diagnostic appears twice). With the file, the server needs the reload to switch.
-   - It exits 1 with an error: report it; the path was not absolute or does not exist, or the FIFO write failed.
+     `dotrush/reloadWorkspace` (`workspace reload sent`), which is what makes the server switch. Without
+     `"$WSDIR/load-completed"` the server's first load is still running with the previous choice, and a reload
+     then would race it (code analysis never starts, or every diagnostic appears twice), so the script sends it
+     once that load finishes (`reload sent (the first load finished with the previous choice)`).
+   - After sending, it waits for DotRush to finish the load it started, up to 90 seconds, and its last line says
+     how that went:
+     - `loaded: N projects`: the load finished; go to step 6.
+     - `still loading after 90s` (exit 3): a large solution or its restore is still running. Run
+       `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-pick-project.sh" wait`, which waits for the same load again, until
+       it prints `loaded:`.
+     - `not waited: the running DotRush proxy is older`: this session's proxy does not count loads. Tell the user
+       a Claude Code restart brings that in, wait about 10 seconds, then do step 6.
+   - It exits 1 with an error: report it. The path was not absolute or does not exist, the FIFO write failed, the
+     load finished without loading a project (the error names `proxy.log` to read), or the server stopped or
+     restarted while loading.
 
-6. **Verify** — wait a few seconds (large solutions take longer), then run an LSP `documentSymbol` on a
-   `.cs` file from the chosen project. Symbols back → success. Still empty → `tail -n 30 "$WSDIR/proxy.log"`
-   and look for `projectLoaded` / errors.
+6. **Verify** — run an LSP `documentSymbol` on a `.cs` file from the chosen project. Symbols back → success.
+   Still empty → `tail -n 30 "$WSDIR/proxy.log"` and look for `projectLoaded` / errors.
 
 ## Notes
 - Always use **absolute** paths.

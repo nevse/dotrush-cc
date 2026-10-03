@@ -24,7 +24,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/dotrush-diagnostics.sh` | injects `dotrush/solutionDiagnostics` into this session's server, waits for the results the proxy captures, and reports them |
 | `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
 | `scripts/list-dotnet-processes.py` | lists attachable .NET processes with elapsed time, main assembly and command line (backs `dotrush-profile.sh ps`) |
-| `scripts/dotrush-pick-project.sh` | saves the session's project choice and sends it to a running server without blocking; paths travel as arguments, never inside JSON or shell source |
+| `scripts/dotrush-pick-project.sh` | saves the session's project choice and sends it to a running server without blocking, then waits for the load it started; paths travel as arguments, never inside JSON or shell source |
 | `skills/dotrush-pick-project/` | picks the `.sln/.slnx/.csproj` DotRush loads for the session and applies it live |
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
@@ -359,14 +359,17 @@ echo '{"method":"dotrush/reloadWorkspace","params":{"workspaceFolders":[{"uri":"
 Notes (learned while verifying this):
 - `didChangeConfiguration` **replaces the entire roslyn section** — include every setting you care about.
 - A reload emits `dotrush/projectLoaded` per project but **not** `dotrush/loadCompleted` (that fires only
-  on initial init). Wait on `projectLoaded` + memory settling.
+  on initial init). Every load, the first and each reload, ends its `$/progress` with `kind: end`; the proxy counts
+  those in `workspace-loads` in the session dir, and `dotrush-pick-project.sh apply` waits for that count to move
+  (up to 90 s, `DOTRUSH_PICK_PROJECT_TIMEOUT`; exit 3 while still loading, then `dotrush-pick-project.sh wait`).
 - **Don't reload a server that has not completed its first load.** DotRush's `initialize` waits for a
   configuration, then loads the project and only then starts its code-analysis worker and sends
   `dotrush/loadCompleted`. On a server started with no project, `didChangeConfiguration` alone loads it; adding
   `reloadWorkspace` races that load, and DotRush either never starts analysis or loads the project twice (every
   diagnostic reported twice). The proxy creates `load-completed` in the session
   dir on `dotrush/loadCompleted`, so reload only when that file exists. `scripts/dotrush-pick-project.sh apply <path>`
-  does this, and first checks that the proxy is running and the FIFO is one, so it neither blocks nor leaves a file.
+  does this: without the file it waits for it, since that first load started with the previous choice, then
+  reloads. It first checks that the proxy is running and the FIFO is one, so it neither blocks nor leaves a file.
 - Inject `didChangeConfiguration` **before** `reloadWorkspace` (FIFO delivery is in order).
 
 ## Troubleshooting

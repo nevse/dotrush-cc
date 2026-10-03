@@ -1,5 +1,17 @@
 # Changelog
 
+### 0.8.13
+- `dotrush-pick-project.sh apply` waits for DotRush to finish the load it started and prints `loaded: N projects`,
+  instead of the `dotrush-pick-project` skill waiting "a few seconds" before checking for symbols. It waits up to
+  90 seconds (`DOTRUSH_PICK_PROJECT_TIMEOUT`) and exits 3 while the load is still running; the new
+  `dotrush-pick-project.sh wait` keeps waiting. A load that loaded no project, or a server that stopped or
+  restarted while loading, exits 1. The proxy counts finished loads in `workspace-loads` in the session dir, from
+  the end of DotRush's load progress, which comes for a reload too; a proxy that predates it is not waited on.
+  Errors from the script start with `dotrush-pick-project:`.
+- A project picked while the server's first load is still running now loads. That load started with the previous
+  choice, and the script sent no reload (it would race the load), so the new choice waited for a restart. The
+  script now sends the reload once the first load completes, and waits for that one.
+
 ### 0.8.12
 - DotRush is pinned to commit `618212b` (30 September 2026), up from `1b94204`. It fixes generic method
   completions that inserted an empty `<>`, and adds built-in analyzers (async void, empty catch, `is null`

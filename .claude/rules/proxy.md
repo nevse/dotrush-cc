@@ -22,6 +22,9 @@ paths:
 - `load-completed` does not mean a project loaded: DotRush completes a load that found several solutions, or none,
   with nothing loaded. `projects-loaded` (`0` at proxy start) tells them apart; readers treat a missing file as an
   older proxy.
+- `load-completed` comes once per server, so it says nothing about a reload. The per-load signal is the end of
+  DotRush's `$/progress` (it reports progress for workspace loads only): `workspace-loads` counts those, and
+  `dotrush-pick-project.sh` waits on it.
 - The injector holds its own write end of `inject.fifo` (`open_fifo_for_reading`) so it never reaches EOF between
   writers. Keep it: a reader that closes and reopens silently drops what a writer sends in between (no EPIPE for
   lines written before the close).

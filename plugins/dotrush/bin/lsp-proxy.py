@@ -94,6 +94,10 @@ LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
 # How many dotrush/projectLoaded this server has sent, 0 from proxy start. DotRush also completes a load that found
 # no single solution or project, so load-completed beside a 0 here means nothing is loaded.
 PROJECTS_LOADED_FILE = os.path.join(WS_DIR, "projects-loaded")
+# How many workspace loads this server has finished, 0 from proxy start. DotRush reports progress only for a load
+# and ends it when the load finishes, the first one and every dotrush/reloadWorkspace alike, so this is the only
+# per-load signal: loadCompleted comes once, and projectLoaded once per project.
+WORKSPACE_LOADS_FILE = os.path.join(WS_DIR, "workspace-loads")
 # Request channel: plugin tooling injects requests whose id is "dotrush-cc:<uuid>", and the responses land
 # here as <uuid>.json instead of reaching Claude Code. The dir existing tells tooling the channel is available.
 RESPONSES_DIR = os.path.join(WS_DIR, "responses")
@@ -297,6 +301,8 @@ def pump_server_to_client(child_stdout, diagnostics=None):
                 mark_load_completed()
             elif b == "notif    dotrush/projectLoaded":
                 count_project_loaded()
+            elif b == "notif    $/progress" and is_progress_end(body):
+                count_workspace_load()
             if not b.startswith("response"):
                 log(f"S->C {b}")
 
@@ -352,6 +358,27 @@ def count_project_loaded():
         write_atomically(PROJECTS_LOADED_FILE, f"{_projects_loaded}\n".encode("ascii"))
     except OSError as e:
         log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
+
+
+def is_progress_end(body):
+    try:
+        value = json.loads(body).get("params", {}).get("value")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(value, dict) and value.get("kind") == "end"
+
+
+_workspace_loads = 0
+
+
+def count_workspace_load():
+    """Counts one finished workspace load and writes the total; the server->client pump is the only caller."""
+    global _workspace_loads
+    _workspace_loads += 1
+    try:
+        write_atomically(WORKSPACE_LOADS_FILE, f"{_workspace_loads}\n".encode("ascii"))
+    except OSError as e:
+        log(f"cannot write {WORKSPACE_LOADS_FILE}: {e}")
 
 
 def pump_stderr(child_stderr):
@@ -626,10 +653,11 @@ def ensure_workspace_dir():
     except OSError as e:
         log(f"cannot remove {LOAD_COMPLETED_FILE}: {e}")
     # Written now rather than on the first project, so a missing file means a proxy that predates the count.
-    try:
-        write_atomically(PROJECTS_LOADED_FILE, b"0\n")
-    except OSError as e:
-        log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
+    for path in (PROJECTS_LOADED_FILE, WORKSPACE_LOADS_FILE):
+        try:
+            write_atomically(path, b"0\n")
+        except OSError as e:
+            log(f"cannot write {path}: {e}")
     # Responses and rename plans belong to an earlier server; start the channel empty.
     for d in (RESPONSES_DIR, EDITS_DIR):
         try:

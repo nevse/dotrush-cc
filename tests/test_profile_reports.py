@@ -1966,6 +1966,11 @@ class DiagnosticsTests(unittest.TestCase):
             lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/A.csproj"}}),
             lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {"projectFilePath": "/src/B.csproj"}}),
             lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
+            # Only the end of a progress counts as a finished workspace load.
+            lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": "begin"}}}),
+            lsp_frame({"jsonrpc": "2.0", "method": "$/progress",
+                       "params": {"token": "t", "value": {"kind": "report", "message": "end"}}}),
+            lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": "end"}}}),
         ])
         script = (
             PROXY_IMPORT
@@ -1981,6 +1986,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result.stdout, stream)
         self.assertTrue(Path(result.stderr.decode()).is_file())
         self.assertEqual((Path(result.stderr.decode()).parent / "projects-loaded").read_text(), "2\n")
+        self.assertEqual((Path(result.stderr.decode()).parent / "workspace-loads").read_text(), "1\n")
         data = json.loads(store.read_text())
         self.assertEqual(data["publishes"], 3)
         self.assertEqual(list(data["files"]), [b])
@@ -2083,6 +2089,7 @@ class DiagnosticsTests(unittest.TestCase):
         (ws / "edits" / "0123456789ab.json").write_text("{}")
         (ws / "load-completed").write_text("")
         (ws / "projects-loaded").write_text("8\n")
+        (ws / "workspace-loads").write_text("3\n")
         script = (
             PROXY_IMPORT
             + "proxy.ensure_workspace_dir()\n"
@@ -2095,6 +2102,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse((ws / "edits").exists())
         self.assertFalse((ws / "load-completed").exists())
         self.assertEqual((ws / "projects-loaded").read_text(), "0\n")
+        self.assertEqual((ws / "workspace-loads").read_text(), "0\n")
 
     def test_an_agterm_session_dir_is_keyed_on_the_launching_claude_process(self):
         # Every Claude process started from one agterm tab (background jobs too) inherits its
@@ -2371,9 +2379,9 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no DotRush language server has started", result.stderr)
 
-    def run_pick(self, *args):
+    def run_pick(self, *args, **env):
         env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(self.root / "data"), "DOTRUSH_SESSION_ID": "test-session",
-               "DOTRUSH_CLI_DIR": str(self.cli_dir)}
+               "DOTRUSH_CLI_DIR": str(self.cli_dir), **env}
         return subprocess.run(["bash", str(PICK_PROJECT_SH), *args], capture_output=True, text=True, env=env, timeout=30)
 
     def awkward_project(self):
@@ -2454,6 +2462,126 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertIn("not applied live", result.stdout)
                 self.assertEqual(json.loads((ws / "target.json").read_text())["projectOrSolutionFiles"], [str(project)])
                 self.assertEqual((ws / "inject.fifo").exists(), case == "dead")
+
+    def apply_with_fake_proxy(self, ws, loads=None, projects=None, timeout="10"):
+        """Runs apply while a thread plays the proxy: it reads both injected lines, then sets the load counts."""
+        import threading
+
+        def fake_proxy():
+            read_fd = os.open(ws / "inject.fifo", os.O_RDONLY | os.O_NONBLOCK)
+            held = os.open(ws / "inject.fifo", os.O_WRONLY)
+            os.set_blocking(read_fd, True)
+            with os.fdopen(read_fd) as fifo:
+                for _ in range(2):
+                    fifo.readline()
+            os.close(held)
+            if projects is not None:
+                (ws / "projects-loaded").write_text(f"{projects}\n")
+            if loads is not None:
+                (ws / "workspace-loads").write_text(f"{loads}\n")
+
+        reader = threading.Thread(target=fake_proxy, daemon=True)
+        reader.start()
+        project = self.root / "App.csproj"
+        project.write_text("<Project />\n")
+        result = self.run_pick("apply", str(project), DOTRUSH_PICK_PROJECT_TIMEOUT=timeout)
+        reader.join(5)
+        return result
+
+    def counting_session(self):
+        ws = self.session(os.getpid())
+        (ws / "workspace-loads").write_text("3\n")
+        (ws / "projects-loaded").write_text("5\n")
+        return ws
+
+    def test_pick_project_waits_for_the_load_its_apply_started(self):
+        ws = self.counting_session()
+
+        result = self.apply_with_fake_proxy(ws, loads=4, projects=7)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("applied: workspace reload sent", result.stdout)
+        self.assertEqual(result.stdout.splitlines()[-1], "loaded: 2 projects")
+        self.assertFalse((ws / "pick-wait").exists())
+
+    def test_pick_project_reloads_once_a_first_load_in_flight_completes(self):
+        # The first load started before apply's configuration arrived, so it loads the previous choice; a reload
+        # sent while it runs would race it, and none at all would leave the new choice unloaded.
+        import threading
+
+        ws = self.counting_session()
+        (ws / "load-completed").unlink()
+        injected = []
+
+        def fake_proxy():
+            read_fd = os.open(ws / "inject.fifo", os.O_RDONLY | os.O_NONBLOCK)
+            held = os.open(ws / "inject.fifo", os.O_WRONLY)
+            os.set_blocking(read_fd, True)
+            with os.fdopen(read_fd) as fifo:
+                injected.append(json.loads(fifo.readline()))
+                time.sleep(1.5)
+                (ws / "projects-loaded").write_text("6\n")
+                (ws / "workspace-loads").write_text("4\n")
+                (ws / "load-completed").write_text("")
+                injected.append(json.loads(fifo.readline()))
+                (ws / "projects-loaded").write_text("8\n")
+                (ws / "workspace-loads").write_text("5\n")
+            os.close(held)
+
+        reader = threading.Thread(target=fake_proxy, daemon=True)
+        reader.start()
+        project = self.root / "App.csproj"
+        project.write_text("<Project />\n")
+        result = self.run_pick("apply", str(project), DOTRUSH_PICK_PROJECT_TIMEOUT="10")
+        reader.join(5)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([m["method"] for m in injected], ["workspace/didChangeConfiguration", "dotrush/reloadWorkspace"])
+        self.assertIn("reload sent (the first load finished with the previous choice)", result.stdout)
+        self.assertEqual(result.stdout.splitlines()[-1], "loaded: 2 projects")
+
+    def test_pick_project_exits_3_while_loading_and_wait_picks_it_up(self):
+        ws = self.counting_session()
+
+        result = self.apply_with_fake_proxy(ws, timeout="1")
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("still loading after 1s", result.stdout)
+        (ws / "projects-loaded").write_text("6\n")
+        (ws / "workspace-loads").write_text("4\n")
+        waited = self.run_pick("wait")
+        self.assertEqual(waited.returncode, 0, waited.stderr)
+        self.assertEqual(waited.stdout.strip(), "loaded: 1 project")
+        again = self.run_pick("wait")
+        self.assertEqual(again.returncode, 1)
+        self.assertIn("dotrush-pick-project: no load to wait for", again.stderr)
+
+    def test_pick_project_fails_a_load_that_loaded_no_project(self):
+        ws = self.counting_session()
+
+        result = self.apply_with_fake_proxy(ws, loads=4)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("without loading a project", result.stderr)
+
+    def test_pick_project_fails_when_the_server_restarts_while_loading(self):
+        ws = self.counting_session()
+        self.apply_with_fake_proxy(ws, timeout="0")
+        (ws / "pid").write_text(f"{os.getppid()}\n")
+
+        result = self.run_pick("wait")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("stopped or restarted while loading", result.stderr)
+
+    def test_pick_project_says_an_older_proxy_is_not_waited_on(self):
+        ws = self.session(os.getpid())
+
+        result = self.apply_with_fake_proxy(ws)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not waited: the running DotRush proxy is older", result.stdout)
+        self.assertFalse((ws / "pick-wait").exists())
 
     def test_pick_project_refuses_a_relative_or_missing_path(self):
         self.session(os.getpid())
