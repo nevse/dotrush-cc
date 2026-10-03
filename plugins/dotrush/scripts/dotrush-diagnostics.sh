@@ -44,8 +44,12 @@ require_live_proxy() {
   # request would sit in its queue until the timeout.
   [[ -f "$dir/load-completed" ]] \
     || dotrush_fail "DotRush has not finished loading the workspace in this session, so its code analysis is not running; wait for the load and retry (where shows load: completed when it is done)"
-  # DotRush also completes a load that found nothing to load; a missing count is a proxy that predates it.
-  [[ "$(cat "$dir/projects-loaded" 2>/dev/null || true)" != "0" ]] \
+  # DotRush also completes a load that found nothing to load, and a chosen project can fail to load. The last load's
+  # count is what is loaded now; without it the total stands in, and a missing total is a proxy that predates it.
+  if [[ "$(cat "$dir/last-load-projects" 2>/dev/null || true)" == 0 ]]; then
+    dotrush_fail "DotRush loaded no project in its last load; look for errors in $dir/proxy.log, or choose another with dotrush-pick-project"
+  fi
+  [[ -f "$dir/last-load-projects" || "$(cat "$dir/projects-loaded" 2>/dev/null || true)" != "0" ]] \
     || dotrush_fail "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"
 }
 

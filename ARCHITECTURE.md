@@ -71,7 +71,7 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 | `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, `dotrush-pick-project.sh` | removed at proxy start |
 | `projects-loaded` | proxy: `0` at start, then the count of `dotrush/projectLoaded` | CLI, diagnostics script, `dotrush-pick-project.sh` | rewritten at proxy start |
 | `workspace-loads` | proxy: `0` at start, then the count of `$/progress` ends, one per finished workspace load | `dotrush-pick-project.sh` | rewritten at proxy start |
-| `last-load-projects` | proxy at the end of each workspace load: the projects that load reported | CLI `session` | removed at proxy start |
+| `last-load-projects` | proxy at the end of each workspace load: the projects that load reported | CLI, diagnostics script | removed at proxy start |
 | `pick-wait` | `dotrush-pick-project.sh apply`: proxy pid and both counts before it sends anything | `dotrush-pick-project.sh` waits until `workspace-loads` passes it | removed when the load finishes |
 | `diagnostics.json` | proxy, coalesced every 0.5 s | diagnostics script | reset at proxy start |
 | `responses/` | proxy creates empty; `<uuid>.json` via temp + rename | CLI deletes after reading; stale after 10 min | recreated at proxy start only |
@@ -90,7 +90,8 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 - **Request channel.** The CLI picks the id `dotrush-cc:<uuid>`, so the proxy keeps no request table. The
   server→client pump substring-checks each frame for the prefix and writes a matching response to
   `responses/<uuid>.json` instead of forwarding it. The CLI's `RequireChannel` checks, in order: proxy pid alive,
-  `responses/` present, `load-completed` present, `projects-loaded` not `0`. It then writes the line and polls every 20 ms; on timeout it
+  `responses/` present, `load-completed` present, a project loaded (`last-load-projects` not `0`, or without it
+  `projects-loaded` not `0`). It then writes the line and polls every 20 ms; on timeout it
   sends `$/cancelRequest` and drops a response that lands within a second.
 - **Diagnostics.** The script records `publishes`, injects `dotrush/solutionDiagnostics`, and waits until the count
   moves and publishing has been quiet for 2 s: DotRush signals no completion, so a clean solution exits 3 on timeout.

@@ -25,7 +25,7 @@ paths:
 - `load-completed` comes once per server, so it says nothing about a reload. The per-load signal is the end of
   DotRush's `$/progress` (it reports progress for workspace loads only): `workspace-loads` counts those, and
   `dotrush-pick-project.sh` waits on it. `projects-loaded` adds up across reloads; `last-load-projects`, written at
-  that end, is what the last load loaded.
+  that end, is what the last load loaded, so "is anything loaded" reads it first and falls back to `projects-loaded`.
 - The injector holds its own write end of `inject.fifo` (`open_fifo_for_reading`) so it never reaches EOF between
   writers. Keep it: a reader that closes and reopens silently drops what a writer sends in between (no EPIPE for
   lines written before the close).

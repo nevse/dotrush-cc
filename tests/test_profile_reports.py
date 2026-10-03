@@ -2387,6 +2387,18 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("DotRush loaded no project in this session", result.stderr)
         self.assertIn("load: completed with no project", self.run_driver("where").stdout)
 
+    def test_solution_refuses_when_the_last_load_failed_though_an_earlier_one_loaded_projects(self):
+        ws = self.session(os.getpid())
+        (ws / "projects-loaded").write_text("4\n")
+        (ws / "last-load-projects").write_text("0\n")
+
+        result = self.run_driver("solution")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"dotrush-diagnostics: DotRush loaded no project in its last load; look for errors in {ws}/proxy.log",
+                      result.stderr)
+        self.assertIn("the last load loaded none", self.run_driver("where").stdout)
+
     def test_without_a_session_dir_it_says_to_start_the_language_server(self):
         result = self.run_driver("report")
         self.assertNotEqual(result.returncode, 0)

@@ -21,8 +21,16 @@ public sealed record SessionState(string Dir)
     // How many projects the last finished load reported; null before one finished, or from a proxy that predates it.
     public int? LastLoadProjects => int.TryParse(ReadTrimmed("last-load-projects"), out var count) ? count : null;
 
-    // DotRush completes a load that found no single solution or project, so a completed load can hold nothing.
-    public bool LoadedNothing => LoadCompleted && ProjectsLoaded == 0;
+    // What is loaded now: the last load's projects, or the total while no load with progress has finished (a load
+    // that found no single solution or project ends without any) or from a proxy that predates the last-load count.
+    public int? CurrentProjects => LastLoadProjects ?? ProjectsLoaded;
+
+    // DotRush completes a load that found no single solution or project, and a load of a chosen project can fail, so a
+    // completed load can hold nothing.
+    public bool LoadedNothing => LoadCompleted && CurrentProjects == 0;
+
+    // A load of a chosen project ran and loaded nothing, rather than nothing having been chosen.
+    public bool LastLoadFailed => LoadedNothing && LastLoadProjects is not null;
 
     public string? Target => ReadTrimmed("target.json");
 
@@ -91,9 +99,10 @@ public static class SessionCommand
         stdout.WriteLine($"workspace: {session.Workspace ?? "unknown"}");
         stdout.WriteLine(session.IsProxyRunning ? $"proxy: running (pid {session.Pid})" : "proxy: not running");
         stdout.WriteLine(
-            session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
+            session.LastLoadFailed ? "load: completed with no project (the last load loaded none; its errors are in proxy.log)"
+            : session.LoadedNothing ? "load: completed with no project (none chosen, and no single solution or project found)"
             : session.LoadCompleted
-                ? (session.LastLoadProjects ?? session.ProjectsLoaded) is { } projects
+                ? session.CurrentProjects is { } projects
                     ? $"load: completed ({projects} project{(projects == 1 ? "" : "s")})" : "load: completed"
             : "load: not completed (no project loaded yet, or still loading)");
         stdout.WriteLine($"target: {session.Target ?? "none chosen"}");
@@ -123,6 +132,8 @@ public static class Session
                 ? "the running DotRush proxy predates the request channel; restart Claude Code"
             : !found.LoadCompleted
                 ? "DotRush has not finished loading the workspace in this session; wait for the load and retry (where shows load: completed when it is done)"
+            : found.LastLoadFailed
+                ? $"DotRush loaded no project in its last load; look for errors in {Path.Combine(found.Dir, "proxy.log")}, or choose another with dotrush-pick-project"
             : found.LoadedNothing
                 ? "DotRush loaded no project in this session: none was chosen, and the workspace has no single solution or project; choose one with dotrush-pick-project"
             : null;

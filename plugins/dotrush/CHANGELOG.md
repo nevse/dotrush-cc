@@ -1,5 +1,12 @@
 # Changelog
 
+### 0.8.15
+- A switch to a project that fails to load now reads as nothing loaded. The checks used the total of every load,
+  so after an earlier load had found projects, `where` said `load: completed (0 projects)` and `solution` and the
+  request channel ran against an empty workspace. They now use the last load's count: `where` says
+  `load: completed with no project (the last load loaded none; its errors are in proxy.log)`, and `solution`,
+  rename and the other channel commands refuse and name `proxy.log`.
+
 ### 0.8.14
 - `dotrush-cli.sh session` (and `dotrush-diagnostics.sh where`) counts the projects of the last load: after a switch
   it said `load: completed (9 projects)` for a 4-project load followed by a 5-project one. The proxy writes that

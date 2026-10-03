@@ -428,6 +428,19 @@ public sealed class SessionTests : IDisposable
             (exit, session, stderr));
     }
 
+    [Fact]
+    public void The_channel_refuses_when_the_last_load_failed_though_an_earlier_one_loaded_projects()
+    {
+        var dir = MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, ProjectsLoaded: 4,
+            LastLoadProjects: 0));
+
+        var (exit, session, stderr) = RequireChannel(Env(sessionId: "session-a"));
+
+        Assert.Equal((1, null,
+            $"dotrush-cli: DotRush loaded no project in its last load; look for errors in {Path.Combine(dir, "proxy.log")}, or choose another with dotrush-pick-project\n"),
+            (exit, session, stderr));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData(8)]
@@ -484,6 +497,18 @@ public sealed class SessionTests : IDisposable
             channel: available
 
             """, ""), result);
+    }
+
+    [Fact]
+    public void Session_says_when_the_last_load_failed_though_an_earlier_one_loaded_projects()
+    {
+        MakeDir("sess-aaaaaaaaaaaa", new(Workspace: project, SessionId: "session-a", Pid: LivePid, ProjectsLoaded: 4,
+            LastLoadProjects: 0));
+
+        var (exit, stdout, _) = Run(Env(sessionId: "session-a"), null, "session");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("load: completed with no project (the last load loaded none; its errors are in proxy.log)\n", stdout);
     }
 
     [Theory]
