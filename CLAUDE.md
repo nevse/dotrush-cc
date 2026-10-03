@@ -1,7 +1,8 @@
 # dotrush-cc
 
 Claude Code marketplace with one plugin, `plugins/dotrush`: a stdio proxy (`bin/lsp-proxy.py`) in front of the
-DotRush C# language server, bash scripts, skills, and a C# CLI (`tools/DotRushCli`).
+DotRush C# language server, a `PreToolUse` hook (`bin/lsp-first.py`), bash scripts, skills, and a C# CLI
+(`tools/DotRushCli`).
 Read `ARCHITECTURE.md` for the parts, the session dir and the fragile points before changing the proxy or the CLI.
 `plugins/dotrush/README.md` is the user reference; the root `README.md` is the pitch, install and usage examples.
 

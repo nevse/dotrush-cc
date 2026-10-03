@@ -1,5 +1,14 @@
 # Changelog
 
+### 0.8.18
+- A `PreToolUse` hook pushes Claude to the C# language server instead of text search. A recursive Grep, or `grep`,
+  `rg` or `git grep` in Bash, whose pattern is only C# identifiers (`Money`, `ToMinor|FromMinor`, `class Money`,
+  `new Money\(`), in a C# file, filter or workspace, is denied with what to run instead:
+  `dotrush-cli.sh request workspace/symbol` for the declaration, then the LSP tool's `findReferences`,
+  `goToDefinition` and the call hierarchy at that position. The same search sent again in the session is let
+  through, for strings, comments and symbols that are not C#. Text patterns, lowercase words and non-C# searches
+  are never touched.
+
 ### 0.8.17
 - The first C# query in a session answers from the loaded project instead of "No symbols found". DotRush answers
   a request at once from what it has loaded, which is nothing while the workspace loads, and Claude Code waits for

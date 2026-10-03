@@ -151,6 +151,7 @@ dotrush-cc/
     ├── .claude-plugin/plugin.json        # plugin manifest (declares the LSP server)
     ├── .lsp.json                         # csharp LSP -> bin/lsp-proxy.py, portable ${CLAUDE_PLUGIN_*} paths
     ├── bin/lsp-proxy.py                  # stdio MITM proxy + injector + request channel + auto-install-on-first-run
+    ├── bin/lsp-first.py, hooks/hooks.json # PreToolUse hook: sends a grep for a C# symbol to the LSP instead
     ├── dotrush-version.json              # pins the DotRush server release and diagnostics tag or commit
     ├── tools/DotRushCli/                 # C# CLI: session lookup, LSP requests, rename preview/apply
     ├── scripts/dotrush-cli.sh            # builds the CLI on first use into the plugin data dir and runs it

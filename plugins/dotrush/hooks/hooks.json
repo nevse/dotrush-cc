@@ -1,0 +1,17 @@
+{
+  "description": "Sends a text search for a C# symbol to the DotRush language server instead",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lsp-first.py\" \"${CLAUDE_PLUGIN_DATA}\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

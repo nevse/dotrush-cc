@@ -25,6 +25,11 @@ User-facing behavior is in `plugins/dotrush/README.md`; this file covers how the
   stdin (client pump, injector, startup replay), always at frame boundaries. The server→client pump forwards frames
   verbatim except a `publishDiagnostics` with info or hint entries, which it re-frames without them after mirroring
   the full list.
+- **LSP-first hook** (`hooks/hooks.json`, `bin/lsp-first.py`, stdlib-only Python 3). A `PreToolUse` hook on Grep
+  and Bash: a recursive search whose pattern is only C# identifiers (`PascalCase`/`camelCase`, optionally after a
+  declaration keyword or before `(`), in C# scope (a C# filter or file, or a workspace holding a project), is denied
+  with `request workspace/symbol` and the LSP operations to use. It records each search per session in
+  `lsp-first/` under the data dir and lets the same one through the second time. Any failure prints nothing.
 - **CLI** (`tools/DotRushCli`, `net10.0`, no packages). `session`, `request`, `rename preview|apply`.
   `Program.Run` dispatches through one usage table; every command takes a `CommandContext`.
   - `Session` finds this session's dir and checks readiness (`RequireChannel`).

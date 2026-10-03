@@ -1,6 +1,7 @@
 ---
 paths:
   - "plugins/dotrush/bin/**"
+  - "plugins/dotrush/hooks/**"
   - "plugins/dotrush/.lsp.json"
   - "plugins/dotrush/scripts/dotrush-diagnostics.sh"
   - "plugins/dotrush/scripts/dotrush-pick-project.sh"
@@ -47,5 +48,7 @@ paths:
   for quiet, and exit 3 means nothing arrived, which includes a clean solution.
 - Every FIFO writer checks the proxy's pid and opens with `O_NONBLOCK` and no `O_CREAT`: a plain `> "$FIFO"`
   blocks on a dead proxy, and before the injector starts it creates a regular file there.
-- Tests: `InjectorTests`, `DiagnosticsTests` and `RequestGateTests` in `tests/test_profile_reports.py`; the channel end to end in
+- `bin/lsp-first.py` (the PreToolUse hook) must never block on its own failure: any error prints nothing, and a
+  search it cannot record is let through, since a denied search with no record could never get through.
+- Tests: `InjectorTests`, `DiagnosticsTests`, `RequestGateTests` and `LspFirstHookTests` in `tests/test_profile_reports.py`; the channel end to end in
   `tests/DotRushCli.Tests/E2E`.

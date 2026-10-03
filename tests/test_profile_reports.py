@@ -2723,6 +2723,81 @@ class RequestGateTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stderr), ["load_started", "load_ended", "first_load_completed", "load_started"])
 
 
+LSP_FIRST = ROOT / "plugins/dotrush/bin/lsp-first.py"
+
+
+class LspFirstHookTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        (self.repo / "src" / "App").mkdir(parents=True)
+        (self.repo / "src" / "App" / "App.csproj").write_text("<Project />\n")
+        (self.repo / "src" / "App" / "Money.cs").write_text("class Money {}\n")
+        self.plain = self.root / "plain"
+        self.plain.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def hook(self, tool, tool_input, cwd=None, session="s1"):
+        payload = {"tool_name": tool, "tool_input": tool_input, "session_id": session, "cwd": str(cwd or self.repo)}
+        result = subprocess.run([sys.executable, str(LSP_FIRST), str(self.root / "state")], input=json.dumps(payload),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"] if result.stdout else None
+
+    def test_denies_a_grep_for_a_csharp_symbol_and_lets_the_same_search_through_again(self):
+        denied = self.hook("Grep", {"pattern": "ToMinor", "path": "src"})
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn("`ToMinor` looks like a C# symbol", denied["permissionDecisionReason"])
+        self.assertIn("""request workspace/symbol '{"query": "ToMinor"}'""", denied["permissionDecisionReason"])
+        self.assertIsNone(self.hook("Grep", {"pattern": "ToMinor", "path": "src"}))
+        self.assertIsNotNone(self.hook("Grep", {"pattern": "ToMinor", "path": "src"}, session="s2"))
+
+    def test_reads_symbol_patterns_out_of_the_usual_regex_shapes(self):
+        for pattern, names in (("\\bMoney\\b", "`Money`"), ("class Money", "`Money`"), ("new Money\\(", "`Money`"),
+                               ("ToMinor|FromMinor", "`ToMinor`, `FromMinor`"), ("Money\\.ToMinor", "`ToMinor`"),
+                               ("isGuest", "`isGuest`")):
+            with self.subTest(pattern):
+                denied = self.hook("Grep", {"pattern": pattern}, session=pattern)
+                self.assertIn(f"{names} looks like", denied["permissionDecisionReason"])
+
+    def test_lets_text_searches_and_searches_outside_csharp_through(self):
+        for tool_input, cwd in (({"pattern": "todo later"}, None), ({"pattern": "money"}, None),
+                                ({"pattern": "MAX_RETRIES"}, None), ({"pattern": "Money.*Rate"}, None),
+                                ({"pattern": "Money", "glob": "*.md"}, None), ({"pattern": "Money", "type": "py"}, None),
+                                ({"pattern": "Money", "path": "README.md"}, None), ({"pattern": "Money"}, self.plain)):
+            with self.subTest(tool_input=tool_input, cwd=cwd):
+                self.assertIsNone(self.hook("Grep", tool_input, cwd=cwd, session=json.dumps(tool_input)))
+
+    def test_denies_recursive_grep_rg_and_git_grep_in_bash_only(self):
+        for command in ('grep -rn "class Money" src --include=*.cs | head', "rg -t cs ToMinor", "git grep -n ToMinor",
+                        "cd src && grep -R --include='*.cs' -e ToMinor ."):
+            with self.subTest(command):
+                self.assertEqual(self.hook("Bash", {"command": command}, session=command)["permissionDecision"], "deny")
+        for command in ("cat Money.cs | grep ToMinor", "rg -t py ToMinor", "grep -rn ToMinor docs --include=*.md",
+                        "dotnet build", "rg 'unterminated"):
+            with self.subTest(command):
+                self.assertIsNone(self.hook("Bash", {"command": command}, session=command))
+
+    def test_a_broken_input_or_state_dir_never_blocks(self):
+        result = subprocess.run([sys.executable, str(LSP_FIRST), str(self.root / "state")], input="not json",
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        (self.root / "file").write_text("")
+        result = subprocess.run([sys.executable, str(LSP_FIRST), str(self.root / "file" / "state")],
+                                input=json.dumps({"tool_name": "Grep", "tool_input": {"pattern": "ToMinor"},
+                                                  "session_id": "s", "cwd": str(self.repo)}),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+    def test_the_plugin_registers_the_hook_for_grep_and_bash(self):
+        hooks = json.loads((ROOT / "plugins/dotrush/hooks/hooks.json").read_text())["hooks"]["PreToolUse"]
+        self.assertEqual(hooks[0]["matcher"], "Grep|Bash")
+        self.assertIn("bin/lsp-first.py", hooks[0]["hooks"][0]["command"])
+
+
 class StartupConfigTests(unittest.TestCase):
     """What the proxy sends DotRush before the client's traffic: its initialize loads nothing until then."""
 
