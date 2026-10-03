@@ -1,5 +1,10 @@
 # Changelog
 
+### 0.8.20
+- The LSP-first hook keeps its record per symbol name, not per command. After an LSP call, Claude searched the
+  denied name again with a slightly different command, which counted as a new search and was denied again, so it
+  gave up on the text search. Now any search for that name goes through once an LSP call came after its denial.
+
 ### 0.8.19
 - A search the LSP-first hook denied goes through when sent again only after the session has made an LSP call, or
   on the third try. Claude resent a denied search at once to get past the hook, without asking the LSP. The hook

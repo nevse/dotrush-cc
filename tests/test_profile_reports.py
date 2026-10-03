@@ -2759,8 +2759,15 @@ class LspFirstHookTests(unittest.TestCase):
         self.assertIn("no LSP call was made since it was denied", again["permissionDecisionReason"])
         self.assertIsNone(self.hook("LSP", {"operation": "workspaceSymbol", "query": "ToMinor"}))
         self.assertIsNone(self.hook("Grep", search))
-        self.assertIsNotNone(self.hook("Grep", search), "a pass is used up; the next time is a new search")
+        self.assertIsNone(self.hook("Grep", search), "a name that passed stays open")
         self.assertIsNotNone(self.hook("Grep", search, session="s2"))
+
+    def test_after_an_lsp_call_any_search_for_that_name_goes_through(self):
+        self.assertIsNotNone(self.hook("Bash", {"command": 'grep -rn "SaveChanges" src | head'}))
+        self.hook("LSP", {"operation": "workspaceSymbol", "query": "SaveChanges"})
+        self.assertIsNone(self.hook("Bash", {"command": 'grep -rn "SaveChanges" src docs; echo "exit=$?"'}))
+        self.assertIsNone(self.hook("Grep", {"pattern": "SaveChanges"}))
+        self.assertIsNotNone(self.hook("Grep", {"pattern": "SaveChanges|ToMinor"}), "ToMinor was never denied")
 
     def test_a_search_goes_through_on_the_third_try_without_an_lsp_call(self):
         search = {"pattern": "ToMinor"}

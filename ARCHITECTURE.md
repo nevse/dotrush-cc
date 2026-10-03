@@ -29,8 +29,8 @@ User-facing behavior is in `plugins/dotrush/README.md`; this file covers how the
   and Bash: a recursive search whose pattern is only C# identifiers (`PascalCase`/`camelCase`, optionally after a
   declaration keyword or before `(`), in C# scope (a C# filter or file, or a workspace holding a project), is denied
   with the LSP tool's `workspaceSymbol` query and the operations to use at its result. It also runs on every LSP
-  call and counts them per session in `lsp-first/` under the data dir: a denied search sent again passes once an
-  LSP call came after the denial, or on the third try. Any failure prints nothing.
+  call and counts them per session in `lsp-first/` under the data dir: a later search for a denied name, in any
+  command, passes once an LSP call came after the denial, or on the third try. Any failure prints nothing.
 - **CLI** (`tools/DotRushCli`, `net10.0`, no packages). `session`, `request`, `rename preview|apply`.
   `Program.Run` dispatches through one usage table; every command takes a `CommandContext`.
   - `Session` finds this session's dir and checks readiness (`RequireChannel`).

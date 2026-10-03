@@ -5,8 +5,8 @@ Claude Code reaches for Grep (or grep/rg in Bash) to find a symbol even with a l
 is deferred and asks for a file position, so a search comes first and the LSP is never called. This hook denies a
 recursive search whose pattern is only C# identifiers, in a C# workspace, and says how to get the same answer from
 DotRush: the LSP tool's workspaceSymbol for the position, then findReferences and the rest. The hook also sees every
-LSP call: the same search sent again passes once the session has asked the LSP since the denial, or on the third
-try, so a text match (a string, a comment) or a symbol the LSP cannot find is never locked out.
+LSP call: a search for the same name, in any command, passes once the session has asked the LSP since the denial, or
+on the third try, so a text match (a string, a comment) or a symbol the LSP cannot find is never locked out.
 
 Usage: lsp-first.py <state dir>. Reads the hook input on stdin; prints a deny decision or nothing.
 """
@@ -168,20 +168,25 @@ class SessionState:
             return False
 
 
-def judge(state, key):
-    """'first', 'again' or 'pass' for a search: denied the first time; sent again, it passes once the session has
-    called the LSP since that denial, or on the third try, so a symbol the LSP cannot find is never locked out."""
-    digest = hashlib.sha1(key.encode()).hexdigest()
-    seen = state.searches.get(digest)
-    if seen is None:
-        verdict = "first"
-        state.searches[digest] = {"t": time.time(), "tries": 1, "lsp_calls": state.lsp_calls}
-    elif state.lsp_calls > seen.get("lsp_calls", 0) or seen.get("tries", 1) >= 2:
+def judge(state, names):
+    """'first', 'again' or 'pass' for a search for these symbol names. A name is denied the first time; searched
+    again, in any command, it passes once the session has called the LSP since that denial, or on the third try, so
+    a symbol the LSP cannot find is never locked out. A name that passed stays open for the rest of the day."""
+    records = [state.searches.get(name) for name in names]
+    if all(r is not None and (r.get("open") or state.lsp_calls > r.get("lsp_calls", 0) or r.get("tries", 1) >= 2)
+           for r in records):
         verdict = "pass"
-        del state.searches[digest]
+        for name in names:
+            state.searches[name]["open"] = True
+    elif all(r is None for r in records):
+        verdict = "first"
     else:
         verdict = "again"
-        seen["tries"] = seen.get("tries", 1) + 1
+    for name, record in zip(names, records):
+        if record is None:
+            state.searches[name] = {"t": time.time(), "tries": 1, "lsp_calls": state.lsp_calls}
+        elif verdict == "again":
+            record["tries"] = record.get("tries", 1) + 1
     if not state.save():
         return "pass"  # without a record a denied search could never get through, so never deny
     return verdict
@@ -195,7 +200,7 @@ def reason(names, verdict):
         return (
             f"dotrush: this search for `{listed}` is still a C# symbol lookup, and no LSP call was made since it was "
             "denied. Ask the LSP tool first:\n" + lookup + "\n"
-            "If the LSP finds nothing or you need a plain text match, send this same search once more and it goes "
+            "If the LSP finds nothing or you need a plain text match, search for this name once more and it goes "
             "through."
         )
     return (
@@ -206,7 +211,7 @@ def reason(names, verdict):
         "or hover. Ask for several symbols in parallel.\n"
         f"(From a shell: \"{CLI}\" request workspace/symbol '{json.dumps({'query': names[0]})}'.)\n"
         "If the symbol is not C#, or you need a plain text match (a string, a comment, a non-C# file), make an LSP call "
-        "first, then send this same search again: it goes through."
+        "first, then search for this name again: it goes through."
     )
 
 
@@ -221,16 +226,15 @@ def decide(hook_input, state_dir):
         state.save()
         return None
     if tool == "Grep":
-        searches, key = [grep_search(tool_input)], json.dumps(tool_input, sort_keys=True)
+        searches = [grep_search(tool_input)]
     elif tool == "Bash":
-        command = tool_input.get("command") or ""
-        searches, key = bash_searches(command), command
+        searches = bash_searches(tool_input.get("command") or "")
     else:
         return None
     for pattern, filters, paths in searches:
         names = symbol_names(pattern)
         if names and in_csharp_scope(filters, paths, cwd):
-            verdict = judge(SessionState(state_dir, session), f"{tool}\0{key}")
+            verdict = judge(SessionState(state_dir, session), names)
             if verdict == "pass":
                 return None
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",

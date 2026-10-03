@@ -14,7 +14,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `.claude-plugin/plugin.json` | plugin manifest; declares the `csharp` LSP server via `.lsp.json` |
 | `.lsp.json` | maps `.cs/.csx/.cshtml` → `bin/lsp-proxy.py`; wires portable `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` paths + a 15 min startup timeout (a first run may build from source) |
 | `bin/lsp-proxy.py` | stdio man-in-the-middle: verbatim forwarding + custom-message injection + request-channel responses to files + auto-install-on-first-run (stdlib-only Python 3) |
-| `hooks/hooks.json`, `bin/lsp-first.py` | `PreToolUse` hook: denies a recursive text search (Grep, or `grep`/`rg`/`git grep` in Bash) whose pattern is only C# identifiers, and says how to ask DotRush instead; sent again, it passes once the session has made an LSP call since, or on the third try |
+| `hooks/hooks.json`, `bin/lsp-first.py` | `PreToolUse` hook: denies a recursive text search (Grep, or `grep`/`rg`/`git grep` in Bash) whose pattern is only C# identifiers, and says how to ask DotRush instead; a later search for that name, in any command, passes once the session has made an LSP call since, or on the third try |
 | `tools/DotRushCli/` | the plugin's C# CLI (`net10.0`, no packages): `session`, `request`, `rename preview`, `rename apply` |
 | `scripts/dotrush-cli.sh` | runs the CLI, building it on first use into `${CLAUDE_PLUGIN_DATA}/cli/<source-hash>/` |
 | `dotrush-version.json` | pins the DotRush repository and the one tag or commit both the server and the profiling tools come from |
