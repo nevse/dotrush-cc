@@ -1,5 +1,14 @@
 # Changelog
 
+### 0.8.17
+- The first C# query in a session answers from the loaded project instead of "No symbols found". DotRush answers
+  a request at once from what it has loaded, which is nothing while the workspace loads, and Claude Code waits for
+  no ready signal, so a query sent right after the server started came back empty although the solution loaded
+  seconds later. The proxy now holds Claude Code's requests until the load ends, the first one and every reload,
+  for at most 45 seconds (`DOTRUSH_HOLD_SECONDS`; Claude Code gives up on a request after 60).
+- The `dotrush-pick-project` skill runs on "No symbols found" only when `where` says nothing is loaded, not while
+  the load is still running.
+
 ### 0.8.16
 - When a chosen project loads nothing, the errors from `dotrush-pick-project.sh`, `where`, `solution` and the request
   channel point to `dotrush-diagnostics.sh report` instead of `proxy.log`. DotRush reports why a project failed,

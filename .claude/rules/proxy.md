@@ -26,6 +26,9 @@ paths:
   DotRush's `$/progress` (it reports progress for workspace loads only): `workspace-loads` counts those, and
   `dotrush-pick-project.sh` waits on it. `projects-loaded` adds up across reloads; `last-load-projects`, written at
   that end, is what the last load loaded, so "is anything loaded" reads it first and falls back to `projects-loaded`.
+- `RequestGate` holds Claude Code's requests while a load runs and must never hold `initialize`, or a notification
+  while nothing is held: DotRush may wait for one before it loads, and the request would then wait the full
+  `HOLD_SECONDS`. Keep `HOLD_SECONDS` below Claude Code's 60 s request timeout.
 - The injector holds its own write end of `inject.fifo` (`open_fifo_for_reading`) so it never reaches EOF between
   writers. Keep it: a reader that closes and reopens silently drops what a writer sends in between (no EPIPE for
   lines written before the close).
@@ -44,5 +47,5 @@ paths:
   for quiet, and exit 3 means nothing arrived, which includes a clean solution.
 - Every FIFO writer checks the proxy's pid and opens with `O_NONBLOCK` and no `O_CREAT`: a plain `> "$FIFO"`
   blocks on a dead proxy, and before the injector starts it creates a regular file there.
-- Tests: `InjectorTests` and `DiagnosticsTests` in `tests/test_profile_reports.py`; the channel end to end in
+- Tests: `InjectorTests`, `DiagnosticsTests` and `RequestGateTests` in `tests/test_profile_reports.py`; the channel end to end in
   `tests/DotRushCli.Tests/E2E`.

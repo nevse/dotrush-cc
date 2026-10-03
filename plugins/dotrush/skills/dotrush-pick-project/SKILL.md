@@ -12,7 +12,9 @@ LSP restarts, so within a session it's asked only once.
 
 ## When to run
 - The user asks to set / pick / change the DotRush (C#) project or solution.
-- C# LSP operations return "No symbols found" (server up, but no project loaded).
+- C# LSP operations return "No symbols found" and `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" where`
+  shows `load: completed with no project`. With `load: not completed` the workspace is still loading: wait and
+  check again rather than picking a project.
 
 ## Steps
 

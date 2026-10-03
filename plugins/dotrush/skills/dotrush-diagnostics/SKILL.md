@@ -17,7 +17,7 @@ Use the plugin helper at `${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh`.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-diagnostics.sh" where
    ```
 
-   - `no DotRush language server has started` — run any C# LSP operation first (for example `documentSymbol` on a `.cs` file in the project), then retry. That first operation may answer "No symbols found" while the workspace is still loading; that is not a missing project, so run `where` again instead of picking one.
+   - `no DotRush language server has started` — run any C# LSP operation first (for example `documentSymbol` on a `.cs` file in the project), then retry. The proxy holds that operation until the workspace load ends (up to 45 seconds), so it answers from the loaded project; if it still says "No symbols found", run `where` before picking a project.
    - `load: not completed` — DotRush is still loading the workspace, and it starts code analysis only after that; `solution` refuses to run. Re-check until it completes (a large solution takes longer); this polls for up to a minute:
 
      ```bash

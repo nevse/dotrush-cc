@@ -105,7 +105,9 @@ There is **no `/lsp` command** in current Claude Code. To check:
 - Open **`/plugin` → Installed → `dotrush`** — it lists the `csharp` LSP server. The **Errors** tab shows
   start-up failures (missing `python3`, download errors, etc.).
 - Or just use it: ask Claude to "find references to <symbol>" / "go to definition" in a `.cs` file. Real
-  results = it's working. "No symbols" = no project loaded → run `dotrush-pick-project`.
+  results = it's working. The proxy holds a query until the workspace load ends (up to 45 s), so the first one
+  in a session answers from the loaded project. "No symbols" after that = no project loaded → run
+  `dotrush-pick-project`.
 
 ## Multiple sessions / projects / worktrees
 

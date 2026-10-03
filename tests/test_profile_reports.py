@@ -2616,6 +2616,113 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
 
 
+class RequestGateTests(unittest.TestCase):
+    """The gate runs in a child process, like the rest of the proxy tests; each script prints what DotRush received."""
+
+    def run_gate(self, steps, hold_seconds=30):
+        script = (
+            PROXY_IMPORT
+            + "import io, json\n"
+            "sent = io.BytesIO()\n"
+            f"gate = proxy.RequestGate(sent, hold_seconds={hold_seconds})\n"
+            "def frame(msg):\n"
+            "    body = json.dumps(msg).encode()\n"
+            "    return f'Content-Length: {len(body)}\\r\\n\\r\\n'.encode(), body\n"
+            "def request(i, method='textDocument/documentSymbol'):\n"
+            "    gate.forward(*frame({'jsonrpc': '2.0', 'id': i, 'method': method}))\n"
+            "def notify(method):\n"
+            "    gate.forward(*frame({'jsonrpc': '2.0', 'method': method}))\n"
+            "def received():\n"
+            "    out, data = [], sent.getvalue()\n"
+            "    while data:\n"
+            "        head, _, rest = data.partition(b'\\r\\n\\r\\n')\n"
+            "        n = int(head.split(b':')[1])\n"
+            "        msg = json.loads(rest[:n]); data = rest[n:]\n"
+            "        out.append(msg.get('method') + (f'#{msg[\"id\"]}' if 'id' in msg else ''))\n"
+            "    return out\n"
+            "log = []\n"
+            + steps
+            + "print(json.dumps(log))\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "gate"}
+        result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_holds_requests_during_the_first_load_and_sends_everything_in_order_when_it_completes(self):
+        log = self.run_gate(
+            "request(0, 'initialize'); notify('initialized'); notify('textDocument/didOpen')\n"
+            "log.append(received())\n"
+            "request(1); notify('textDocument/didChange'); request(2, 'textDocument/hover')\n"
+            "log.append(received())\n"
+            "gate.load_started(); gate.load_ended()  # the first load's progress ends before loadCompleted\n"
+            "log.append(received())\n"
+            "gate.first_load_completed()\n"
+            "log.append(received())\n"
+            "request(3)\n"
+            "log.append(received())\n"
+        )
+        passed = ["initialize#0", "initialized", "textDocument/didOpen"]
+        held = ["textDocument/documentSymbol#1", "textDocument/didChange", "textDocument/hover#2"]
+        self.assertEqual(log, [passed, passed, passed, passed + held, passed + held + ["textDocument/documentSymbol#3"]])
+
+    def test_holds_requests_during_a_reload(self):
+        log = self.run_gate(
+            "gate.first_load_completed(); gate.load_started()\n"
+            "request(1)\n"
+            "log.append(received())\n"
+            "gate.load_ended()\n"
+            "log.append(received())\n"
+        )
+        self.assertEqual(log, [[], ["textDocument/documentSymbol#1"]])
+
+    def test_sends_held_requests_after_the_hold_time_and_holds_no_more_until_that_load_ends(self):
+        log = self.run_gate(
+            "request(1)\n"
+            "time.sleep(0.6)\n"
+            "log.append(received())\n"
+            "request(2)\n"
+            "log.append(received())\n"
+            "gate.first_load_completed(); gate.load_started()\n"
+            "request(3)\n"
+            "log.append(received())\n",
+            hold_seconds=0.2,
+        )
+        self.assertEqual(log, [["textDocument/documentSymbol#1"],
+                               ["textDocument/documentSymbol#1", "textDocument/documentSymbol#2"],
+                               ["textDocument/documentSymbol#1", "textDocument/documentSymbol#2"]])
+
+    def test_the_server_pump_tells_the_gate_about_loads(self):
+        def progress(kind):
+            return lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t", "value": {"kind": kind}}})
+
+        stream = b"".join([progress("begin"), progress("end"), lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
+                           progress("begin")])
+        script = (
+            PROXY_IMPORT
+            + "import json\n"
+            "os.makedirs(proxy.WS_DIR)\n"
+            "class Gate:\n"
+            "    calls = []\n"
+            "    def __getattr__(self, name):\n"
+            "        return lambda: self.calls.append(name)\n"
+            "gate = Gate()\n"
+            "proxy.pump_server_to_client(sys.stdin, None, gate)\n"
+            "sys.stderr.write(json.dumps(gate.calls))\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "gate-pump"}
+        result = subprocess.run([sys.executable, "-c", script], input=stream, env=env, capture_output=True, check=True)
+        self.assertEqual(result.stdout, stream)
+        self.assertEqual(json.loads(result.stderr), ["load_started", "load_ended", "first_load_completed", "load_started"])
+
+
 class StartupConfigTests(unittest.TestCase):
     """What the proxy sends DotRush before the client's traffic: its initialize loads nothing until then."""
 

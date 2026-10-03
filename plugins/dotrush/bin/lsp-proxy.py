@@ -111,6 +111,12 @@ RESPONSE_ID_SUFFIX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 # Rename plans saved by the CLI; they describe files as this server saw them, so a new server drops them.
 EDITS_DIR = os.path.join(WS_DIR, "edits")
 
+# How long a request Claude Code sends while DotRush loads the workspace is held back. DotRush answers it at once from
+# what it has loaded so far, which is nothing on a first load ("No symbols found"), and Claude Code waits for no ready
+# signal. Kept below the 60 s Claude Code waits for an answer (2.1.288: "response after 60000ms"), leaving DotRush time
+# to answer.
+HOLD_SECONDS = float(os.environ.get("DOTRUSH_HOLD_SECONDS") or 45)
+
 _log_lock = threading.Lock()
 _stdin_lock = threading.Lock()  # serializes writes into DotRush's stdin
 
@@ -233,21 +239,113 @@ class DiagnosticsStore:
             self.write()
 
 
-def pump_client_to_server(child_stdin):
+def write_to_server(child_stdin, data):
+    with _stdin_lock:
+        child_stdin.write(data)
+        child_stdin.flush()
+
+
+class RequestGate:
+    """Holds Claude Code's requests while DotRush loads the workspace, and sends them once the load ends.
+
+    A load runs from proxy start until dotrush/loadCompleted, and on a reload from DotRush's $/progress begin to its
+    end (it reports progress for workspace loads only). initialize and shutdown always pass, and so does a
+    notification while nothing is held: DotRush may need one to start loading. Once a request is held, every frame
+    after it waits behind it, so DotRush still sees them in Claude Code's order. After HOLD_SECONDS everything held is
+    sent and nothing more is held until that load ends, so a long load costs at most one wait."""
+
+    PASS_METHODS = ("initialize", "shutdown")
+
+    def __init__(self, child_stdin, hold_seconds=None):
+        self.child_stdin = child_stdin
+        self.hold_seconds = HOLD_SECONDS if hold_seconds is None else hold_seconds
+        self.cond = threading.Condition()
+        self.held = []
+        self.first_load_done = False
+        self.reloading = False
+        self.gave_up = False
+
+    def loading(self):
+        return not self.first_load_done or self.reloading
+
+    def forward(self, header, body):
+        """Sends a client frame to DotRush, or holds it."""
+        with self.cond:
+            if not self.held and not (self.loading() and not self.gave_up and is_held_request(body, self.PASS_METHODS)):
+                write_to_server(self.child_stdin, header + body)
+                return
+            if not self.held:
+                log(f"holding requests until the workspace load ends (at most {self.hold_seconds:g}s)")
+                threading.Thread(target=self._expire, args=(time.monotonic() + self.hold_seconds,), daemon=True).start()
+            self.held.append(header + body)
+
+    def first_load_completed(self):
+        with self.cond:
+            self.first_load_done = True
+            self._settle()
+
+    def load_started(self):
+        with self.cond:
+            self.reloading = True
+
+    def load_ended(self):
+        with self.cond:
+            self.reloading = False
+            self._settle()
+
+    def flush(self):
+        with self.cond:
+            self._send_held("sent held requests")
+
+    def _settle(self):
+        if not self.loading():
+            self.gave_up = False
+            self._send_held("workspace load ended; sent held requests")
+
+    def _send_held(self, why):
+        if self.held:
+            log(f"{why} ({len(self.held)} frames)")
+            write_to_server(self.child_stdin, b"".join(self.held))
+            self.held = []
+        self.cond.notify_all()
+
+    def _expire(self, deadline):
+        with self.cond:
+            while self.held and time.monotonic() < deadline:
+                self.cond.wait(deadline - time.monotonic())
+            if self.held:
+                self.gave_up = True
+                self._send_held(f"workspace still loading after {self.hold_seconds:g}s; sent held requests")
+
+
+def is_held_request(body, pass_methods):
+    if b'"method"' not in body or b'"id"' not in body:
+        return False
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(msg, dict) and "id" in msg and msg.get("method") not in pass_methods
+
+
+def pump_client_to_server(child_stdin, gate=None):
     reader = FrameReader(0)
     while True:
         f = reader.read_frame()
         if f is None:
             log("client stdin EOF -> closing server stdin")
+            if gate:
+                gate.flush()
             try:
                 child_stdin.close()
             except OSError:
                 pass
             return
         header, body = f
-        with _stdin_lock:
-            child_stdin.write(header + body)
-            child_stdin.flush()
+        if gate:
+            gate.forward(header, body)
+        else:
+            write_to_server(child_stdin, header + body)
 
 
 # What Claude Code is shown of a publish: errors, warnings and diagnostics without a severity, which it
@@ -282,7 +380,7 @@ def publish_diagnostics(header, body, diagnostics=None):
     return frame(body)[:-len(body)], body
 
 
-def pump_server_to_client(child_stdout, diagnostics=None):
+def pump_server_to_client(child_stdout, diagnostics=None, gate=None):
     reader = FrameReader(child_stdout.fileno())
     while True:
         f = reader.read_frame()
@@ -302,14 +400,20 @@ def pump_server_to_client(child_stdout, diagnostics=None):
             b = brief(body)
             if b == "notif    dotrush/loadCompleted":
                 mark_load_completed()
+                if gate:
+                    gate.first_load_completed()
             elif b == "notif    dotrush/projectLoaded":
                 count_project_loaded()
             elif b == "notif    $/progress":
                 kind = progress_kind(body)
                 if kind == "begin":
                     start_workspace_load()
+                    if gate:
+                        gate.load_started()
                 elif kind == "end":
                     count_workspace_load()
+                    if gate:
+                        gate.load_ended()
             if not b.startswith("response"):
                 log(f"S->C {b}")
 
@@ -762,15 +866,16 @@ def main():
     # A fresh server has published nothing, so replace whatever an earlier server in this session left.
     diagnostics = DiagnosticsStore(DIAGNOSTICS_FILE)
     diagnostics.write()
+    gate = RequestGate(child.stdin)
     for t in (
-        threading.Thread(target=pump_client_to_server, args=(child.stdin,), daemon=True),
+        threading.Thread(target=pump_client_to_server, args=(child.stdin, gate), daemon=True),
         threading.Thread(target=pump_stderr, args=(child.stderr,), daemon=True),
         threading.Thread(target=injector, args=(child.stdin,), daemon=True),
         threading.Thread(target=diagnostics.flusher, daemon=True),
     ):
         t.start()
     try:
-        pump_server_to_client(child.stdout, diagnostics)
+        pump_server_to_client(child.stdout, diagnostics, gate)
     finally:
         if child.poll() is None:
             child.terminate()

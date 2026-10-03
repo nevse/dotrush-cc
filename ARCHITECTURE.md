@@ -85,6 +85,12 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
   configuration with that section arrives, and Claude Code's `.lsp.json` `settings` never carry one. The empty
   section makes DotRush load the workspace's single solution (or single project) on its own; with several it
   completes the load with no project, which `projects-loaded` = `0` tells apart.
+- **Held requests.** DotRush answers a request at once from what it has loaded, which is nothing during the first
+  load, and Claude Code waits for no ready signal. `RequestGate` holds Claude Code's requests (not `initialize`
+  or `shutdown`) from proxy start until `dotrush/loadCompleted`, and during a reload from `$/progress` begin to
+  end, then sends them; frames after a held one wait behind it to keep their order. It gives up after
+  `HOLD_SECONDS` (45; Claude Code times a request out at 60) and holds nothing more until that load ends.
+  Channel requests from the FIFO are not held: the CLI checks the load itself.
 - **Injection.** One JSON-RPC message per FIFO line; the injector adds `jsonrpc`, frames it and writes it under
   `_stdin_lock`. Notifications only; requests go through the channel.
 - **Request channel.** The CLI picks the id `dotrush-cc:<uuid>`, so the proxy keeps no request table. The
