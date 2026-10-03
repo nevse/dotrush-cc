@@ -1,5 +1,11 @@
 # Changelog
 
+### 0.8.12
+- DotRush is pinned to commit `618212b` (30 September 2026), up from `1b94204`. It fixes generic method
+  completions that inserted an empty `<>`, and adds built-in analyzers (async void, empty catch, `is null`
+  checks), their code fixes and six refactorings, so diagnostics can report those findings. Not a release
+  either, so the server and the profiling tools are built from source on first use.
+
 ### 0.8.11
 - The `dotrush-diagnostics` skill no longer calls analyzer findings after a file was opened "usually info": they
   came as hints too (`IDE0005`), which a plain `report` only counts, so the skill now says to pass `--hints` to see
