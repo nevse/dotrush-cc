@@ -4,8 +4,9 @@
 Claude Code reaches for Grep (or grep/rg in Bash) to find a symbol even with a language server running: the LSP tool
 is deferred and asks for a file position, so a search comes first and the LSP is never called. This hook denies a
 recursive search whose pattern is only C# identifiers, in a C# workspace, and says how to get the same answer from
-DotRush: workspace/symbol through the plugin's CLI for the position, then the LSP tool. The same search sent again is
-let through, so a text match (a string, a comment) is one retry away.
+DotRush: the LSP tool's workspaceSymbol for the position, then findReferences and the rest. The hook also sees every
+LSP call: the same search sent again passes once the session has asked the LSP since the denial, or on the third
+try, so a text match (a string, a comment) or a symbol the LSP cannot find is never locked out.
 
 Usage: lsp-first.py <state dir>. Reads the hook input on stdin; prints a deny decision or nothing.
 """
@@ -138,42 +139,74 @@ def bash_searches(command):
     return searches
 
 
-def seen_before(state_dir, session_id, key):
-    """Records the search; True when this session already sent it, which lets the repeat through."""
-    path = os.path.join(state_dir, "lsp-first", f"{hashlib.sha1(session_id.encode()).hexdigest()[:16]}.json")
-    try:
-        with open(path) as f:
-            seen = json.load(f)
-    except (OSError, ValueError):
-        seen = {}
-    now = time.time()
-    seen = {k: t for k, t in seen.items() if now - t < STATE_MAX_AGE}
+class SessionState:
+    """What the hook remembers of one Claude session: how many LSP calls it made, and each search it denied with the
+    LSP call count at the time. Kept in lsp-first/<session hash>.json under the data dir, for a day."""
+
+    def __init__(self, state_dir, session_id):
+        self.path = os.path.join(state_dir, "lsp-first", f"{hashlib.sha1(session_id.encode()).hexdigest()[:16]}.json")
+        try:
+            with open(self.path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        now = time.time()
+        self.lsp_calls = data.get("lsp_calls", 0) if isinstance(data.get("lsp_calls"), int) else 0
+        searches = data.get("searches") if isinstance(data.get("searches"), dict) else {}
+        self.searches = {k: v for k, v in searches.items() if isinstance(v, dict) and now - v.get("t", 0) < STATE_MAX_AGE}
+
+    def save(self):
+        """False when the state cannot be written."""
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = f"{self.path}.{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
+                json.dump({"lsp_calls": self.lsp_calls, "searches": self.searches}, f)
+            os.replace(tmp, self.path)
+            return True
+        except OSError:
+            return False
+
+
+def judge(state, key):
+    """'first', 'again' or 'pass' for a search: denied the first time; sent again, it passes once the session has
+    called the LSP since that denial, or on the third try, so a symbol the LSP cannot find is never locked out."""
     digest = hashlib.sha1(key.encode()).hexdigest()
-    repeat = digest in seen
-    seen[digest] = now
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(seen, f)
-        os.replace(tmp, path)
-    except OSError:
-        return True  # without a record a repeat could not get through, so never deny
-    return repeat
+    seen = state.searches.get(digest)
+    if seen is None:
+        verdict = "first"
+        state.searches[digest] = {"t": time.time(), "tries": 1, "lsp_calls": state.lsp_calls}
+    elif state.lsp_calls > seen.get("lsp_calls", 0) or seen.get("tries", 1) >= 2:
+        verdict = "pass"
+        del state.searches[digest]
+    else:
+        verdict = "again"
+        seen["tries"] = seen.get("tries", 1) + 1
+    if not state.save():
+        return "pass"  # without a record a denied search could never get through, so never deny
+    return verdict
 
 
-def reason(names):
-    name = names[0]
-    query = json.dumps({"query": name})
+def reason(names, verdict):
+    listed = "`, `".join(names)
+    lookup = "\n".join(
+        f"- workspaceSymbol with query \"{name}\" (filePath: any .cs file, line 1, character 1)" for name in names)
+    if verdict == "again":
+        return (
+            f"dotrush: this search for `{listed}` is still a C# symbol lookup, and no LSP call was made since it was "
+            "denied. Ask the LSP tool first:\n" + lookup + "\n"
+            "If the LSP finds nothing or you need a plain text match, send this same search once more and it goes "
+            "through."
+        )
     return (
-        f"dotrush: `{'`, `'.join(names)}` looks like a C# symbol, and this workspace has the DotRush C# language server. "
-        "Ask it instead of searching text: it returns only the real declarations and references, in one call.\n"
-        f"1. Where it is declared: \"{CLI}\" request workspace/symbol '{query}' "
-        "(prints file URIs with 0-based line and character).\n"
-        "2. At that position (the LSP tool takes 1-based line and character): findReferences, goToDefinition, "
-        "goToImplementation, incomingCalls/outgoingCalls or hover. Ask for several symbols in parallel.\n"
-        "If the symbol is not C#, or you need a plain text match (a string, a comment, a non-C# file), send this same "
-        "search again unchanged; a repeat is let through."
+        f"dotrush: `{listed}` looks like a C# symbol, and this workspace has the DotRush C# language server. Ask it "
+        "instead of searching text: it returns only the real declarations and references, in one call.\n"
+        "1. Where it is declared, with the LSP tool:\n" + lookup + "\n"
+        "2. At the position it returns: findReferences, goToDefinition, goToImplementation, incomingCalls/outgoingCalls "
+        "or hover. Ask for several symbols in parallel.\n"
+        f"(From a shell: \"{CLI}\" request workspace/symbol '{json.dumps({'query': names[0]})}'.)\n"
+        "If the symbol is not C#, or you need a plain text match (a string, a comment, a non-C# file), make an LSP call "
+        "first, then send this same search again: it goes through."
     )
 
 
@@ -181,6 +214,12 @@ def decide(hook_input, state_dir):
     tool = hook_input.get("tool_name")
     tool_input = hook_input.get("tool_input") or {}
     cwd = hook_input.get("cwd") or os.getcwd()
+    session = hook_input.get("session_id") or "none"
+    if tool == "LSP":
+        state = SessionState(state_dir, session)
+        state.lsp_calls += 1
+        state.save()
+        return None
     if tool == "Grep":
         searches, key = [grep_search(tool_input)], json.dumps(tool_input, sort_keys=True)
     elif tool == "Bash":
@@ -191,10 +230,11 @@ def decide(hook_input, state_dir):
     for pattern, filters, paths in searches:
         names = symbol_names(pattern)
         if names and in_csharp_scope(filters, paths, cwd):
-            if seen_before(state_dir, hook_input.get("session_id") or "none", f"{tool}\0{key}"):
+            verdict = judge(SessionState(state_dir, session), f"{tool}\0{key}")
+            if verdict == "pass":
                 return None
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                           "permissionDecisionReason": reason(names)}}
+                                           "permissionDecisionReason": reason(names, verdict)}}
     return None
 
 

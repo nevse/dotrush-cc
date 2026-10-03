@@ -1,5 +1,12 @@
 # Changelog
 
+### 0.8.19
+- A search the LSP-first hook denied goes through when sent again only after the session has made an LSP call, or
+  on the third try. Claude resent a denied search at once to get past the hook, without asking the LSP. The hook
+  now also runs on LSP calls to count them.
+- The hook's message leads with the LSP tool's `workspaceSymbol` and its `query` for each name; the CLI
+  `request workspace/symbol` is the shell fallback.
+
 ### 0.8.18
 - A `PreToolUse` hook pushes Claude to the C# language server instead of text search. A recursive Grep, or `grep`,
   `rg` or `git grep` in Bash, whose pattern is only C# identifiers (`Money`, `ToMinor|FromMinor`, `class Money`,

@@ -2747,13 +2747,32 @@ class LspFirstHookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)["hookSpecificOutput"] if result.stdout else None
 
-    def test_denies_a_grep_for_a_csharp_symbol_and_lets_the_same_search_through_again(self):
-        denied = self.hook("Grep", {"pattern": "ToMinor", "path": "src"})
+    def test_denies_a_grep_for_a_csharp_symbol_and_lets_it_through_after_an_lsp_call(self):
+        search = {"pattern": "ToMinor", "path": "src"}
+        denied = self.hook("Grep", search)
         self.assertEqual(denied["permissionDecision"], "deny")
-        self.assertIn("`ToMinor` looks like a C# symbol", denied["permissionDecisionReason"])
-        self.assertIn("""request workspace/symbol '{"query": "ToMinor"}'""", denied["permissionDecisionReason"])
-        self.assertIsNone(self.hook("Grep", {"pattern": "ToMinor", "path": "src"}))
-        self.assertIsNotNone(self.hook("Grep", {"pattern": "ToMinor", "path": "src"}, session="s2"))
+        reason = denied["permissionDecisionReason"]
+        self.assertIn("`ToMinor` looks like a C# symbol", reason)
+        self.assertIn('workspaceSymbol with query "ToMinor"', reason)
+        self.assertLess(reason.index("workspaceSymbol"), reason.index("request workspace/symbol"))
+        again = self.hook("Grep", search)
+        self.assertIn("no LSP call was made since it was denied", again["permissionDecisionReason"])
+        self.assertIsNone(self.hook("LSP", {"operation": "workspaceSymbol", "query": "ToMinor"}))
+        self.assertIsNone(self.hook("Grep", search))
+        self.assertIsNotNone(self.hook("Grep", search), "a pass is used up; the next time is a new search")
+        self.assertIsNotNone(self.hook("Grep", search, session="s2"))
+
+    def test_a_search_goes_through_on_the_third_try_without_an_lsp_call(self):
+        search = {"pattern": "ToMinor"}
+        self.assertIsNotNone(self.hook("Grep", search))
+        self.assertIsNotNone(self.hook("Grep", search))
+        self.assertIsNone(self.hook("Grep", search))
+
+    def test_an_lsp_call_before_the_denial_does_not_count(self):
+        self.hook("LSP", {"operation": "hover"})
+        search = {"pattern": "ToMinor"}
+        self.assertIsNotNone(self.hook("Grep", search))
+        self.assertIn("no LSP call", self.hook("Grep", search)["permissionDecisionReason"])
 
     def test_reads_symbol_patterns_out_of_the_usual_regex_shapes(self):
         for pattern, names in (("\\bMoney\\b", "`Money`"), ("class Money", "`Money`"), ("new Money\\(", "`Money`"),
@@ -2794,7 +2813,7 @@ class LspFirstHookTests(unittest.TestCase):
 
     def test_the_plugin_registers_the_hook_for_grep_and_bash(self):
         hooks = json.loads((ROOT / "plugins/dotrush/hooks/hooks.json").read_text())["hooks"]["PreToolUse"]
-        self.assertEqual(hooks[0]["matcher"], "Grep|Bash")
+        self.assertEqual(hooks[0]["matcher"], "Grep|Bash|LSP")
         self.assertIn("bin/lsp-first.py", hooks[0]["hooks"][0]["command"])
 
 
