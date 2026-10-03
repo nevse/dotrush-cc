@@ -39,7 +39,7 @@ The DotRush version this plugin version uses is pinned in `dotrush-version.json`
 ```json
 {
   "repository": "JaneySprings/DotRush",
-  "ref": "1b942045447104061b30b1b5f135a0e28e07ef6c"
+  "ref": "618212b1a561b23d3a1931deb4734c94561f8ac9"
 }
 ```
 
@@ -52,8 +52,9 @@ it by `install-dotrush.sh`, the same way and from the same place:
   a .NET 10 SDK, a few minutes per component). Both are `dotnet publish`ed as DotRush's `build.cake` does
   before its `pack` step zips them into those bundles.
 
-The pin is DotRush commit `1b94204` (19 September 2026), one commit past the 2026.09 release: its `dotnet-trace`
-has `--format Json`, whose allocation profile `alloc-report` reads. It has no release yet, so both components are
+The pin is DotRush commit `618212b` (30 September 2026), past the 2026.09 release: its `dotnet-trace` has
+`--format Json`, whose allocation profile `alloc-report` reads. The next commit, `a0f2845`, replaces the server's
+JSON-RPC layer, which the proxy sits on, so it waits for a release or its own test run. It has no release yet, so both components are
 built from source on first use; move the pin to the next release tag once it ships, and the bundles are downloaded
 again.
 
