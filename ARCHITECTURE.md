@@ -85,10 +85,10 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 
 ## Flows
 
-- **LSP traffic.** Frames are forwarded byte for byte. Before any client traffic the proxy sends DotRush a
-  `workspace/didChangeConfiguration` with its `dotrush.roslyn` section: `target.json` when there is one, otherwise an
-  empty section, unless a `dotrush.config.json` configures DotRush. DotRush's `initialize` loads nothing until a
-  configuration with that section arrives, and Claude Code's `.lsp.json` `settings` never carry one. The empty
+- **LSP traffic.** Frames are forwarded byte for byte. Right behind Claude Code's `initialize` the proxy sends DotRush
+  a `workspace/didChangeConfiguration` with its `dotrush.roslyn` section: `target.json` when there is one, otherwise
+  an empty section, unless a `dotrush.config.json` configures DotRush. DotRush drops a notification sent before
+  `initialize`, and its load, started by `initialized`, loads nothing until a configuration with that section arrives, and Claude Code's `.lsp.json` `settings` never carry one. The empty
   section makes DotRush load the workspace's single solution (or single project) on its own; with several it
   completes the load with no project, which `projects-loaded` = `0` tells apart.
 - **Held requests.** DotRush answers a request at once from what it has loaded, which is nothing during the first
@@ -137,7 +137,8 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
   identifies a rename.
 - A request-channel id becomes a file name, so the proxy accepts only a lowercase uuid suffix.
 - The proxy's stdout is the LSP stream: nothing but frames may reach it.
-- DotRush's `initialize` waits for a `dotrush.roslyn` configuration and drops any other, so without the proxy's
-  startup injection no project ever loads, not even a workspace's only solution.
+- DotRush's load waits for a `dotrush.roslyn` configuration and drops any other, so without the proxy's startup
+  injection no project ever loads, not even a workspace's only solution. The injection must follow `initialize`:
+  DotRush (from `a0f2845`, its own JSON-RPC layer) silently drops a notification that comes before it.
 - `dotnet-trace --duration` goes through `TimeSpan.Parse`, which reads `00:30` as 30 minutes.
 - Known and accepted: lock reclaim in `dotrush_lock` is not atomic (`docs/backlog/lock-reclaim-is-not-atomic.md`).

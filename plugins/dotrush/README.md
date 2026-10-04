@@ -40,7 +40,7 @@ The DotRush version this plugin version uses is pinned in `dotrush-version.json`
 ```json
 {
   "repository": "JaneySprings/DotRush",
-  "ref": "618212b1a561b23d3a1931deb4734c94561f8ac9"
+  "ref": "6cbf7c024e080b14b2332ebd042df8bb05bd6595"
 }
 ```
 
@@ -53,9 +53,10 @@ it by `install-dotrush.sh`, the same way and from the same place:
   a .NET 10 SDK, a few minutes per component). Both are `dotnet publish`ed as DotRush's `build.cake` does
   before its `pack` step zips them into those bundles.
 
-The pin is DotRush commit `618212b` (30 September 2026), past the 2026.09 release: its `dotnet-trace` has
-`--format Json`, whose allocation profile `alloc-report` reads. The next commit, `a0f2845`, replaces the server's
-JSON-RPC layer, which the proxy sits on, so it waits for a release or its own test run. It has no release yet, so both components are
+The pin is DotRush commit `6cbf7c0` (3 October 2026), past the 2026.09 release: its `dotnet-trace` has
+`--format Json`, whose allocation profile `alloc-report` reads, its document symbols include records, event fields
+and operators (DotRush #213), and its hover markdown is clean (#214). From `a0f2845` on, DotRush has its own JSON-RPC
+layer in place of the LanguageServer.Framework submodule. It has no release yet, so both components are
 built from source on first use; move the pin to the next release tag once it ships, and the bundles are downloaded
 again.
 
@@ -365,8 +366,8 @@ Notes (learned while verifying this):
   on initial init). Every load, the first and each reload, ends its `$/progress` with `kind: end`; the proxy counts
   those in `workspace-loads` in the session dir, and `dotrush-pick-project.sh apply` waits for that count to move
   (up to 90 s, `DOTRUSH_PICK_PROJECT_TIMEOUT`; exit 3 while still loading, then `dotrush-pick-project.sh wait`).
-- **Don't reload a server that has not completed its first load.** DotRush's `initialize` waits for a
-  configuration, then loads the project and only then starts its code-analysis worker and sends
+- **Don't reload a server that has not completed its first load.** DotRush's first load, started by
+  `initialized`, waits for a configuration, then loads the project and only then starts its code-analysis worker and sends
   `dotrush/loadCompleted`. On a server started with no project, `didChangeConfiguration` alone loads it; adding
   `reloadWorkspace` races that load, and DotRush either never starts analysis or loads the project twice (every
   diagnostic reported twice). The proxy creates `load-completed` in the session

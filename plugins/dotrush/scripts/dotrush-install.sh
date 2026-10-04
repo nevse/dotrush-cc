@@ -152,7 +152,9 @@ dotrush_fetch_release() {
 
 # Builds a component into $5 as DotRush's own build does. Both checkouts are shallow, and the
 # submodule the component needs is fetched directly by the commit the ref pins, which took a third of
-# the time `git submodule update --depth 1` did.
+# the time `git submodule update --depth 1` did. From a0f2845 on, the server's protocol layer lives in
+# the DotRush tree and .gitmodules no longer lists src/DotRush.LanguageServer.Framework: a submodule
+# the ref does not list is not fetched.
 dotrush_build_steps() {
   local component="$1" repo="$2" ref="$3" work="$4" out="$5"
   local source="$4/source" submodule commit url tool dotnet
@@ -164,11 +166,12 @@ dotrush_build_steps() {
   git init -q "$source" || return 1
   git -C "$source" fetch -q --depth 1 "https://github.com/$repo.git" "$ref" || return 1
   git -C "$source" checkout -q FETCH_HEAD || return 1
-  commit="$(git -C "$source" rev-parse "HEAD:$submodule")" || return 1
-  url="$(git -C "$source" config -f .gitmodules "submodule.$submodule.url")" || return 1
-  git init -q "$source/$submodule" || return 1
-  git -C "$source/$submodule" fetch -q --depth 1 "$url" "$commit" || return 1
-  git -C "$source/$submodule" checkout -q FETCH_HEAD || return 1
+  if url="$(git -C "$source" config -f .gitmodules "submodule.$submodule.url")"; then
+    commit="$(git -C "$source" rev-parse "HEAD:$submodule")" || return 1
+    git init -q "$source/$submodule" || return 1
+    git -C "$source/$submodule" fetch -q --depth 1 "$url" "$commit" || return 1
+    git -C "$source/$submodule" checkout -q FETCH_HEAD || return 1
+  fi
   case "$component" in
     server)
       # DotRush's server task: a plain Release publish, framework-dependent and without a launcher.

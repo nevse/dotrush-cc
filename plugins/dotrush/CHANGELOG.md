@@ -1,5 +1,15 @@
 # Changelog
 
+### 0.8.21
+- The pin moves to DotRush `6cbf7c0` (3 October 2026): document symbols now list records, event fields and
+  operators (DotRush #213), hover markdown keeps the spaces around inline code and shows generic types as `List<T>`
+  (#214), and a rename in a file with syntax errors says why it failed (#211). Built from source on first use, as
+  before.
+- That DotRush replaces its LanguageServer.Framework submodule with its own JSON-RPC layer, which drops a
+  notification sent before `initialize`. The proxy sent the chosen project ahead of `initialize`, so no project ever
+  loaded; it now sends it right behind `initialize`. The installer fetches a submodule only when the pinned
+  `.gitmodules` lists it.
+
 ### 0.8.20
 - The LSP-first hook keeps its record per symbol name, not per command. After an LSP call, Claude searched the
   denied name again with a slightly different command, which counted as a new search and was denied again, so it

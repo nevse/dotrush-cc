@@ -1601,6 +1601,8 @@ if "init" in args:
 elif "rev-parse" in args:
     print("89a1406c47ec9046b33cdaca6150aa3d17e31bd8" if "Diagnostics" in args[-1] else "5e1f0c2d3b4a59687766554433221100ffeeddcc")
 elif "config" in args:
+    if "Diagnostics" not in args[-1] and os.environ.get("STUB_NO_FRAMEWORK"):
+        sys.exit(1)
     print("https://github.com/JaneySprings/" + ("diagnostics.git" if "Diagnostics" in args[-1] else "LanguageServer.Framework.git"))
 """
 STUB_DOTNET = r"""#!/usr/bin/env python3
@@ -1698,6 +1700,16 @@ class InstallTests(unittest.TestCase):
         for tool, call in zip(("dotnet-trace", "dotnet-gcdump"), publishes[1:]):
             self.assertIn(f"src/DotRush.Debugging.Diagnostics/src/Tools/{tool}/{tool}.csproj", call)
 
+
+    def test_a_ref_without_the_framework_submodule_builds_the_server_from_the_tree_alone(self):
+        # From a0f2845 on, DotRush's .gitmodules no longer lists src/DotRush.LanguageServer.Framework.
+        result = self.install("server", DOTRUSH_REF=COMMIT, STUB_NO_FRAMEWORK="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded("server"), (COMMIT, "build"))
+        git = self.calls("git")
+        self.assertFalse(any("LanguageServer.Framework" in call and ("fetch" in call or "init" in call) for call in git), git)
+        self.assertFalse(any("rev-parse" in call for call in git), git)
+        self.assertTrue((self.data / "server" / "DotRush.dll").exists())
     def test_a_release_with_every_bundle_is_downloaded_for_both_components(self):
         for component in ("server", "diagnostics"):
             with self.subTest(component=component):
@@ -2825,7 +2837,7 @@ class LspFirstHookTests(unittest.TestCase):
 
 
 class StartupConfigTests(unittest.TestCase):
-    """What the proxy sends DotRush before the client's traffic: its initialize loads nothing until then."""
+    """What the proxy sends DotRush right after the client's initialize: its load waits for it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -2866,6 +2878,30 @@ class StartupConfigTests(unittest.TestCase):
     def test_an_unusable_target_falls_back_to_the_empty_section(self):
         self.target.write_text('{"projectOrSolutionFiles": []}')
         self.assertEqual(self.sent(), {})
+
+    def test_it_follows_the_client_initialize_once(self):
+        # DotRush drops a notification that comes before initialize, so the configuration goes right behind it.
+        stream = b"".join(lsp_frame(m) for m in (
+            {"jsonrpc": "2.0", "method": "$/setTrace", "params": {}},
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}},
+        ))
+        script = (
+            PROXY_IMPORT
+            + "import io, json\n"
+            "class Sink(io.BytesIO):\n"
+            "    def close(self): pass\n"
+            "sink = Sink()\n"
+            "proxy.pump_client_to_server(sink)\n"
+            "print(json.dumps([json.loads(b).get('method') for b in sink.getvalue().split(b'\\r\\n\\r\\n')[1:] for b in [b.split(b'Content-Length')[0]]]))\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root),
+               "DOTRUSH_TARGET_FILE": str(self.target), "DOTRUSH_REAL_BIN": str(self.root / "server" / "DotRush.dll")}
+        result = subprocess.run([sys.executable, "-c", script], input=stream, cwd=self.workspace, env=env,
+                                capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout), ["$/setTrace", "initialize", "workspace/didChangeConfiguration",
+                                                     "initialized", "initialize"])
 
     def test_a_dotrush_config_file_in_the_workspace_is_left_to_dotrush(self):
         (self.workspace / "dotrush.config.json").write_text('{"dotrush": {"roslyn": {}}}')

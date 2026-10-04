@@ -87,7 +87,7 @@ TARGET_FILE = os.environ.get("DOTRUSH_TARGET_FILE") or os.path.join(WS_DIR, "tar
 DIAGNOSTICS_FILE = os.environ.get("DOTRUSH_DIAGNOSTICS_FILE") or os.path.join(WS_DIR, "diagnostics.json")
 # DotRush's own config file, read from its cwd (the workspace) or its install dir.
 DOTRUSH_CONFIG_FILE = "dotrush.config.json"
-# Present once DotRush sends dotrush/loadCompleted. Until then its initialize is still waiting for a
+# Present once DotRush sends dotrush/loadCompleted. Until then its first load is still waiting for a
 # first project: a dotrush/reloadWorkspace then races that load, and DotRush either never starts code
 # analysis or loads the project twice and reports every diagnostic twice.
 LOAD_COMPLETED_FILE = os.path.join(WS_DIR, "load-completed")
@@ -328,8 +328,19 @@ def is_held_request(body, pass_methods):
     return isinstance(msg, dict) and "id" in msg and msg.get("method") not in pass_methods
 
 
+def is_initialize(body):
+    if b'"initialize"' not in body:
+        return False
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(msg, dict) and msg.get("method") == "initialize" and "id" in msg
+
+
 def pump_client_to_server(child_stdin, gate=None):
     reader = FrameReader(0)
+    configured = False
     while True:
         f = reader.read_frame()
         if f is None:
@@ -346,6 +357,10 @@ def pump_client_to_server(child_stdin, gate=None):
             gate.forward(header, body)
         else:
             write_to_server(child_stdin, header + body)
+        # The gate never holds initialize, so the configuration reaches DotRush right behind it.
+        if not configured and is_initialize(body):
+            configured = True
+            startup_config_inject(child_stdin)
 
 
 # What Claude Code is shown of a publish: errors, warnings and diagnostics without a severity, which it
@@ -810,10 +825,12 @@ def persisted_target():
 
 
 def startup_config_inject(child_stdin):
-    """Send DotRush its roslyn section as workspace/didChangeConfiguration, first thing.
+    """Send DotRush its roslyn section as workspace/didChangeConfiguration, right after the client's initialize.
 
-    DotRush's initialize waits for a configuration that has a dotrush.roslyn section before it loads anything,
-    and Claude Code sends the .lsp.json `settings`, which have none. So the persisted target goes first, making
+    DotRush drops a notification that comes before initialize, and handles initialize alone before the next message,
+    so this one lands just after it. Its load (started by initialized) waits for a configuration that has a
+    dotrush.roslyn section before it loads anything, and Claude Code sends the .lsp.json `settings`, which have
+    none. So the persisted target goes first, making
     the chosen solution load with no dotrush.config.json in the repo. Without one, an empty section lets DotRush
     look for a single .sln/.slnx/.slnf, then a single .csproj, under the workspace; without it nothing ever
     loads. A dotrush.config.json DotRush reads itself (from its cwd or its own dir) is left to do that.
@@ -862,7 +879,6 @@ def main():
         command + sys.argv[1:],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
     )
-    startup_config_inject(child.stdin)  # push the persisted target before the client's traffic
     # A fresh server has published nothing, so replace whatever an earlier server in this session left.
     diagnostics = DiagnosticsStore(DIAGNOSTICS_FILE)
     diagnostics.write()
