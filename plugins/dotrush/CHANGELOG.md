@@ -1,5 +1,16 @@
 # Changelog
 
+### 0.8.22
+- `dotrush-pick-project.sh wait` (and `apply`) ends again when a reload finishes, instead of `still loading after
+  90s`. DotRush reports a workspace load only after its `window/workDoneProgress/create` request succeeds, and
+  Claude Code 2.1.319 answers it with an error (`Unhandled method window/workDoneProgress/create` in DotRush's
+  `Error.log`), so no `$/progress` came and `workspace-loads` stayed 0. The proxy now answers that request itself
+  and keeps the load's progress to itself. The request hold during a reload works again for the same reason.
+- When DotRush finished loading with no project and none was chosen (a folder holding several solutions), the
+  LSP-first hook no longer denies symbol searches, which only led to "No symbols found". It tells Claude once per
+  session to run `dotrush-pick-project`. It reads the session from `dotrush-cli.sh session --dir`, which no longer
+  builds the CLI when `DOTRUSH_CLI_NO_BUILD` is set.
+
 ### 0.8.21
 - The pin moves to DotRush `6cbf7c0` (3 October 2026): document symbols now list records, event fields and
   operators (DotRush #213), hover markdown keeps the spaces around inline code and shows generic types as `List<T>`

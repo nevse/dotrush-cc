@@ -2735,6 +2735,41 @@ class RequestGateTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stderr), ["load_started", "load_ended", "first_load_completed", "load_started"])
 
 
+    def test_the_proxy_answers_progress_create_itself_and_keeps_that_progress(self):
+        """Claude Code 2.1.319 answers window/workDoneProgress/create with an error, and DotRush then reports no load."""
+        def progress(token, kind):
+            return lsp_frame({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": token, "value": {"kind": kind}}})
+
+        loaded = lsp_frame({"jsonrpc": "2.0", "method": "dotrush/projectLoaded", "params": {}})
+        other = progress("client-token", "begin")
+        stream = b"".join([
+            lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}),
+            lsp_frame({"jsonrpc": "2.0", "id": 2, "method": "window/workDoneProgress/create", "params": {"token": "t1"}}),
+            progress("t1", "begin"), loaded, loaded, progress("t1", "end"), other,
+        ])
+        script = (
+            PROXY_IMPORT
+            + "import io, json\n"
+            "os.makedirs(proxy.WS_DIR)\n"
+            "class Gate:\n"
+            "    calls = []\n"
+            "    def __getattr__(self, name):\n"
+            "        return lambda: self.calls.append(name)\n"
+            "gate, sent = Gate(), io.BytesIO()\n"
+            "proxy.pump_server_to_client(sys.stdin, None, gate, sent)\n"
+            "sys.stderr.write(json.dumps({'calls': gate.calls, 'sent': sent.getvalue().decode(), 'dir': proxy.WS_DIR}))\n"
+        )
+        env = {**os.environ, "DOTRUSH_PROXY_LOG": "", "DOTRUSH_DATA_DIR": str(self.root), "DOTRUSH_SESSION_ID": "create"}
+        result = subprocess.run([sys.executable, "-c", script], input=stream, env=env, capture_output=True, check=True)
+        out = json.loads(result.stderr)
+        self.assertEqual(result.stdout, lsp_frame({"jsonrpc": "2.0", "method": "dotrush/loadCompleted"}) + loaded + loaded + other)
+        self.assertEqual(out["sent"], lsp_frame({"jsonrpc": "2.0", "id": 2, "result": None}).decode())
+        self.assertEqual(out["calls"], ["first_load_completed", "load_started", "load_ended", "load_started"])
+        ws = Path(out["dir"])
+        self.assertEqual((ws / "workspace-loads").read_text(), "1\n")
+        self.assertEqual((ws / "last-load-projects").read_text(), "2\n")
+
+
 LSP_FIRST = ROOT / "plugins/dotrush/bin/lsp-first.py"
 
 
@@ -2748,16 +2783,68 @@ class LspFirstHookTests(unittest.TestCase):
         (self.repo / "src" / "App" / "Money.cs").write_text("class Money {}\n")
         self.plain = self.root / "plain"
         self.plain.mkdir()
+        # The session's runtime dir, as the CLI names it: the fake CLI prints it when it exists, and fails otherwise.
+        self.ws = self.root / "state" / "ws" / "sess-0123456789ab"
+        self.cli = self.root / "fake-cli.sh"
+        self.cli.write_text(f'#!/bin/sh\n[ "$1 $2" = "session --dir" ] && [ -d "{self.ws}" ] && echo "{self.ws}" && exit 0\n'
+                            "echo 'dotrush-cli: no DotRush language server has started' >&2; exit 1\n")
+        self.cli.chmod(0o755)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def hook(self, tool, tool_input, cwd=None, session="s1"):
         payload = {"tool_name": tool, "tool_input": tool_input, "session_id": session, "cwd": str(cwd or self.repo)}
+        env = {**os.environ, "DOTRUSH_LSP_FIRST_CLI": str(self.cli)}
         result = subprocess.run([sys.executable, str(LSP_FIRST), str(self.root / "state")], input=json.dumps(payload),
-                                capture_output=True, text=True, timeout=30)
+                                env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)["hookSpecificOutput"] if result.stdout else None
+
+    def session_files(self, **files):
+        self.ws.mkdir(parents=True, exist_ok=True)
+        for name, text in files.items():
+            (self.ws / name.replace("_", "-").replace("-json", ".json")).write_text(text)
+
+    def test_with_no_project_loaded_it_denies_nothing_and_says_once_to_pick_one(self):
+        self.session_files(load_completed="2026-11-07T10:00:00\n", projects_loaded="0\n", workspace_loads="0\n")
+        told = self.hook("Grep", {"pattern": "ToMinor", "path": "src"})
+        self.assertNotIn("permissionDecision", told)
+        self.assertIn("loaded no project", told["additionalContext"])
+        self.assertIn("`dotrush:dotrush-pick-project`", told["additionalContext"])
+        self.assertIsNone(self.hook("Grep", {"pattern": "ToMinor", "path": "src"}))
+        self.assertIsNone(self.hook("Bash", {"command": "rg -t cs FromMinor"}))
+        self.assertIsNone(self.hook("LSP", {"operation": "workspaceSymbol", "query": "ToMinor"}))
+        # Once a project is chosen and loads, searches go to the LSP again.
+        self.session_files(target_json='{"projectOrSolutionFiles": ["/r/App.slnx"]}', projects_loaded="3\n")
+        self.assertEqual(self.hook("Grep", {"pattern": "Money"})["permissionDecision"], "deny")
+
+    def test_an_lsp_call_with_no_project_loaded_carries_the_hint_once(self):
+        self.session_files(load_completed="x\n", projects_loaded="0\n")
+        self.assertIn("dotrush-pick-project", self.hook("LSP", {"operation": "hover"})["additionalContext"])
+        self.assertIsNone(self.hook("LSP", {"operation": "hover"}))
+        self.assertIsNone(self.hook("Grep", {"pattern": "ToMinor"}))
+
+    def test_keeps_denying_while_a_load_runs_or_after_a_project_loaded(self):
+        for files in ({"projects_loaded": "0\n"},  # first load still running
+                      {"load_completed": "x\n", "projects_loaded": "0\n", "target_json": "{}"},  # chosen, loading
+                      {"load_completed": "x\n", "projects_loaded": "24\n"},
+                      {"load_completed": "x\n", "projects_loaded": "5\n", "last_load_projects": "2\n"},
+                      {"load_completed": "x\n"}):  # an older proxy writes no count
+            with self.subTest(files):
+                shutil.rmtree(self.ws, ignore_errors=True)
+                self.session_files(**files)
+                denied = self.hook("Grep", {"pattern": "ToMinor"}, session=json.dumps(files))
+                self.assertEqual(denied["permissionDecision"], "deny")
+
+    def test_the_cli_wrapper_does_not_build_for_the_hook(self):
+        env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(self.root / "data"), "DOTRUSH_CLI_NO_BUILD": "1"}
+        env.pop("DOTRUSH_CLI_DIR", None)
+        result = subprocess.run(["bash", str(ROOT / "plugins/dotrush/scripts/dotrush-cli.sh"), "session", "--dir"],
+                                env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not built yet", result.stderr)
+        self.assertFalse((self.root / "data" / "cli").exists())
 
     def test_denies_a_grep_for_a_csharp_symbol_and_lets_it_through_after_an_lsp_call(self):
         search = {"pattern": "ToMinor", "path": "src"}

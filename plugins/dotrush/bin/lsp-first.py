@@ -7,8 +7,13 @@ recursive search whose pattern is only C# identifiers, in a C# workspace, and sa
 DotRush: the LSP tool's workspaceSymbol for the position, then findReferences and the rest. The hook also sees every
 LSP call: a search for the same name, in any command, passes once the session has asked the LSP since the denial, or
 on the third try, so a text match (a string, a comment) or a symbol the LSP cannot find is never locked out.
+When this session's DotRush finished loading with no project and none was chosen (a folder holding several solutions,
+say), the LSP finds nothing: the hook then denies nothing and tells Claude once to pick a project with the
+dotrush-pick-project skill. The session's runtime dir comes from `dotrush-cli.sh session --dir`, the only session
+lookup; the hook only reads the files the proxy writes there.
 
-Usage: lsp-first.py <state dir>. Reads the hook input on stdin; prints a deny decision or nothing.
+Usage: lsp-first.py <state dir>. Reads the hook input on stdin; prints a deny decision, a hint or nothing.
+DOTRUSH_LSP_FIRST_CLI replaces scripts/dotrush-cli.sh (tests).
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 
@@ -28,6 +34,9 @@ SKIP_DIRS = {".git", "bin", "obj", "node_modules", ".vs", ".idea"}
 KEYWORDS = r"(?:class|interface|record|struct|enum|new|void|async|static|public|private|internal|protected|override)"
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 STATE_MAX_AGE = 24 * 60 * 60
+# The CLI answers `session --dir` in well under a second once built; the hook itself has 10 s.
+CLI_TIMEOUT = 5
+PICK_SKILL = "dotrush:dotrush-pick-project"
 GREP_PROGRAMS = {"grep", "egrep", "ugrep", "rg"}
 # grep and rg options that take a value as the next argument.
 VALUE_OPTIONS = {"-e", "-f", "-A", "-B", "-C", "-m", "--max-count", "-g", "--glob", "-t", "--type", "--include",
@@ -152,6 +161,8 @@ class SessionState:
             data = {}
         now = time.time()
         self.lsp_calls = data.get("lsp_calls", 0) if isinstance(data.get("lsp_calls"), int) else 0
+        # When this session was told DotRush has no project; told once, the hint is not repeated.
+        self.pick_hint = data.get("pick_hint") if isinstance(data.get("pick_hint"), (int, float)) else None
         searches = data.get("searches") if isinstance(data.get("searches"), dict) else {}
         self.searches = {k: v for k, v in searches.items() if isinstance(v, dict) and now - v.get("t", 0) < STATE_MAX_AGE}
 
@@ -161,11 +172,61 @@ class SessionState:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             tmp = f"{self.path}.{os.getpid()}.tmp"
             with open(tmp, "w") as f:
-                json.dump({"lsp_calls": self.lsp_calls, "searches": self.searches}, f)
+                json.dump({"lsp_calls": self.lsp_calls, "searches": self.searches, "pick_hint": self.pick_hint}, f)
             os.replace(tmp, self.path)
             return True
         except OSError:
             return False
+
+
+def session_dir(state_dir, cwd):
+    """This session's DotRush runtime dir, from the CLI; None when there is none or the CLI cannot say quickly.
+
+    The CLI finds the dir from AGTERM_SESSION_ID/DOTRUSH_SESSION_ID and CLAUDE_PID, which the hook inherits from
+    Claude Code (the hook input's session_id is Claude's own id, which the dirs are not keyed on). It never builds
+    here: a build takes minutes, and without the dir the hook just keeps sending searches to the LSP."""
+    env = dict(os.environ, DOTRUSH_CLI_NO_BUILD="1")
+    if state_dir:
+        env["CLAUDE_PLUGIN_DATA"] = state_dir
+    try:
+        result = subprocess.run([os.environ.get("DOTRUSH_LSP_FIRST_CLI") or CLI, "session", "--dir"], env=env,
+                                cwd=cwd if os.path.isdir(cwd) else None, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=CLI_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = result.stdout.strip()
+    return path if result.returncode == 0 and os.path.isdir(path) else None
+
+
+def read_count(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def loaded_no_project(ws_dir):
+    """True when DotRush finished loading with no project and none was chosen, so the LSP finds no symbol.
+
+    The same reading as the CLI's `load: completed with no project (none chosen ...)`: load-completed, no target.json,
+    and 0 projects loaded (last-load-projects, else projects-loaded). A chosen target that has not loaded yet is
+    still loading, and a missing count is an older proxy; neither counts."""
+    if not os.path.exists(os.path.join(ws_dir, "load-completed")) or os.path.exists(os.path.join(ws_dir, "target.json")):
+        return False
+    count = read_count(os.path.join(ws_dir, "last-load-projects"))
+    if count is None:
+        count = read_count(os.path.join(ws_dir, "projects-loaded"))
+    return count == 0
+
+
+def no_project_hint():
+    return (
+        "dotrush: the DotRush C# language server in this session has loaded no project: none was chosen, and the "
+        "workspace has no single solution or project. The LSP tool answers \"No symbols found\" until one is loaded, "
+        f"so text searches for C# symbols go through for now. To get the LSP, run the `{PICK_SKILL}` skill to "
+        "choose the solution or project to load, then use the LSP tool."
+    )
 
 
 def judge(state, names):
@@ -223,6 +284,8 @@ def decide(hook_input, state_dir):
     if tool == "LSP":
         state = SessionState(state_dir, session)
         state.lsp_calls += 1
+        if state.pick_hint is None and no_project(state_dir, cwd):
+            return hint(state)
         state.save()
         return None
     if tool == "Grep":
@@ -234,12 +297,28 @@ def decide(hook_input, state_dir):
     for pattern, filters, paths in searches:
         names = symbol_names(pattern)
         if names and in_csharp_scope(filters, paths, cwd):
-            verdict = judge(SessionState(state_dir, session), names)
+            state = SessionState(state_dir, session)
+            if no_project(state_dir, cwd):
+                return hint(state) if state.pick_hint is None else None
+            verdict = judge(state, names)
             if verdict == "pass":
                 return None
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                            "permissionDecisionReason": reason(names, verdict)}}
     return None
+
+
+def no_project(state_dir, cwd):
+    ws_dir = session_dir(state_dir, cwd)
+    return ws_dir is not None and loaded_no_project(ws_dir)
+
+
+def hint(state):
+    """Tells Claude, without denying anything, that DotRush has no project; once per session."""
+    state.pick_hint = time.time()
+    if not state.save():
+        return None  # a hint that cannot be recorded would come back on every search
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": no_project_hint()}}
 
 
 def main():

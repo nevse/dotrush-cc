@@ -29,6 +29,9 @@ paths:
   DotRush's `$/progress` (it reports progress for workspace loads only): `workspace-loads` counts those, and
   `dotrush-pick-project.sh` waits on it. `projects-loaded` adds up across reloads; `last-load-projects`, written at
   that end, is what the last load loaded, so "is anything loaded" reads it first and falls back to `projects-loaded`.
+- DotRush sends that progress only after its `window/workDoneProgress/create` succeeds, and Claude Code 2.1.319
+  answers create with an error, so the proxy answers it itself (`answer_progress_create`) and does not forward the
+  progress of a token it answered. Never forward that request to Claude Code again.
 - `RequestGate` holds Claude Code's requests while a load runs and must never hold `initialize`, or a notification
   while nothing is held: DotRush may wait for one before it loads, and the request would then wait the full
   `HOLD_SECONDS`. Keep `HOLD_SECONDS` below Claude Code's 60 s request timeout.
@@ -52,5 +55,7 @@ paths:
   blocks on a dead proxy, and before the injector starts it creates a regular file there.
 - `bin/lsp-first.py` (the PreToolUse hook) must never block on its own failure: any error prints nothing, and a
   search it cannot record is let through, since a denied search with no record could never get through.
+  It finds the session dir only through `dotrush-cli.sh session --dir` with `DOTRUSH_CLI_NO_BUILD` (a build would
+  outlast the hook's 10 s), and when DotRush loaded nothing with nothing chosen it denies nothing and hints once.
 - Tests: `InjectorTests`, `DiagnosticsTests`, `RequestGateTests` and `LspFirstHookTests` in `tests/test_profile_reports.py`; the channel end to end in
   `tests/DotRushCli.Tests/E2E`.

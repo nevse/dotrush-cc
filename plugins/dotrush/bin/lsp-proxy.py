@@ -395,7 +395,8 @@ def publish_diagnostics(header, body, diagnostics=None):
     return frame(body)[:-len(body)], body
 
 
-def pump_server_to_client(child_stdout, diagnostics=None, gate=None):
+def pump_server_to_client(child_stdout, diagnostics=None, gate=None, child_stdin=None):
+    """Forwards DotRush's frames to Claude Code; with child_stdin, answers DotRush's progress requests itself."""
     reader = FrameReader(child_stdout.fileno())
     while True:
         f = reader.read_frame()
@@ -406,10 +407,13 @@ def pump_server_to_client(child_stdout, diagnostics=None, gate=None):
         # The substring test keeps every other frame from being parsed here.
         if RESPONSE_ID_MARKER in body and route_response(body):
             continue
+        if (child_stdin is not None and b'"window/workDoneProgress/create"' in body
+                and answer_progress_create(body, child_stdin)):
+            continue
         # The substring test keeps large responses from being parsed a second time.
         if b'"textDocument/publishDiagnostics"' in body:
             header, body = publish_diagnostics(header, body, diagnostics)
-        os.write(1, header + body)
+        forward = True
         # Only frames with a method are logged, so a response is never parsed here at all.
         if b'"method"' in body:
             b = brief(body)
@@ -420,17 +424,22 @@ def pump_server_to_client(child_stdout, diagnostics=None, gate=None):
             elif b == "notif    dotrush/projectLoaded":
                 count_project_loaded()
             elif b == "notif    $/progress":
-                kind = progress_kind(body)
+                token, kind = progress_of(body)
+                # Claude Code never saw the create for a token the proxy answered, so it is not shown its progress.
+                forward = token not in _proxy_progress_tokens
                 if kind == "begin":
                     start_workspace_load()
                     if gate:
                         gate.load_started()
                 elif kind == "end":
+                    _proxy_progress_tokens.discard(token)
                     count_workspace_load()
                     if gate:
                         gate.load_ended()
             if not b.startswith("response"):
-                log(f"S->C {b}")
+                log(f"S->C {b}" + ("" if forward else " (not forwarded)"))
+        if forward:
+            os.write(1, header + body)
 
 
 def write_atomically(path, data):
@@ -487,12 +496,45 @@ def count_project_loaded():
         log(f"cannot write {PROJECTS_LOADED_FILE}: {e}")
 
 
-def progress_kind(body):
+def progress_of(body):
+    """(token, kind) of a $/progress notification; None for what it lacks."""
     try:
-        value = json.loads(body).get("params", {}).get("value")
+        params = json.loads(body).get("params", {})
+        token, value = params.get("token"), params.get("value")
     except (ValueError, AttributeError):
-        return None
-    return value.get("kind") if isinstance(value, dict) else None
+        return None, None
+    token = token if isinstance(token, (str, int)) else None
+    return token, value.get("kind") if isinstance(value, dict) else None
+
+
+# Progress tokens whose window/workDoneProgress/create the proxy answered; their $/progress stays with the proxy.
+_proxy_progress_tokens = set()
+
+
+def answer_progress_create(body, child_stdin):
+    """Answers DotRush's window/workDoneProgress/create itself; True when the frame must not be forwarded.
+
+    DotRush reports a workspace load only after its create request succeeds, and the load's $/progress end is the
+    proxy's only per-load signal (workspace-loads, last-load-projects, RequestGate). Claude Code 2.1.319 answers
+    the request with an error ("Unhandled method window/workDoneProgress/create" in DotRush's Error.log), and DotRush
+    then sends no progress at all, so the proxy answers instead and never relies on the client for it."""
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(msg, dict) or msg.get("method") != "window/workDoneProgress/create" or "id" not in msg:
+        return False
+    params = msg.get("params")
+    token = params.get("token") if isinstance(params, dict) else None
+    if isinstance(token, (str, int)):
+        _proxy_progress_tokens.add(token)
+    reply = json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": None}).encode("utf-8")
+    try:
+        write_to_server(child_stdin, frame(reply))
+    except (OSError, ValueError) as e:
+        log(f"cannot answer window/workDoneProgress/create (server gone?): {e}")
+    log("S->C request window/workDoneProgress/create (answered by the proxy)")
+    return True
 
 
 _workspace_loads = 0
@@ -891,7 +933,7 @@ def main():
     ):
         t.start()
     try:
-        pump_server_to_client(child.stdout, diagnostics, gate)
+        pump_server_to_client(child.stdout, diagnostics, gate, child.stdin)
     finally:
         if child.poll() is None:
             child.terminate()

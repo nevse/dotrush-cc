@@ -30,7 +30,10 @@ User-facing behavior is in `plugins/dotrush/README.md`; this file covers how the
   declaration keyword or before `(`), in C# scope (a C# filter or file, or a workspace holding a project), is denied
   with the LSP tool's `workspaceSymbol` query and the operations to use at its result. It also runs on every LSP
   call and counts them per session in `lsp-first/` under the data dir: a later search for a denied name, in any
-  command, passes once an LSP call came after the denial, or on the third try. Any failure prints nothing.
+  command, passes once an LSP call came after the denial, or on the third try. When the session's DotRush finished
+  loading with no project and none was chosen (`dotrush-cli.sh session --dir`, then `load-completed`, no
+  `target.json`, 0 projects), it denies nothing and adds, once per session, `additionalContext` telling Claude to run
+  `dotrush-pick-project`. It runs the CLI with `DOTRUSH_CLI_NO_BUILD`, so it never builds. Any failure prints nothing.
 - **CLI** (`tools/DotRushCli`, `net10.0`, no packages). `session`, `request`, `rename preview|apply`.
   `Program.Run` dispatches through one usage table; every command takes a `CommandContext`.
   - `Session` finds this session's dir and checks readiness (`RequireChannel`).
@@ -76,7 +79,7 @@ restarts. A proxy start prunes `sess-*` dirs whose `pid` is dead.
 | `target.json` | `dotrush-pick-project.sh` | proxy replays it at start | per session |
 | `load-completed` | proxy on `dotrush/loadCompleted` | CLI, diagnostics script, `dotrush-pick-project.sh` | removed at proxy start |
 | `projects-loaded` | proxy: `0` at start, then the count of `dotrush/projectLoaded` | CLI, diagnostics script, `dotrush-pick-project.sh` | rewritten at proxy start |
-| `workspace-loads` | proxy: `0` at start, then the count of `$/progress` ends, one per finished workspace load | `dotrush-pick-project.sh` | rewritten at proxy start |
+| `workspace-loads` | proxy: `0` at start, then the count of `$/progress` ends, one per finished workspace load (the proxy answers DotRush's `window/workDoneProgress/create` itself, since Claude Code answers it with an error) | `dotrush-pick-project.sh` | rewritten at proxy start |
 | `last-load-projects` | proxy at the end of each workspace load: the projects that load reported | CLI, diagnostics script | removed at proxy start |
 | `pick-wait` | `dotrush-pick-project.sh apply`: proxy pid and both counts before it sends anything | `dotrush-pick-project.sh` waits until `workspace-loads` passes it | removed when the load finishes |
 | `diagnostics.json` | proxy, coalesced every 0.5 s | diagnostics script | reset at proxy start |

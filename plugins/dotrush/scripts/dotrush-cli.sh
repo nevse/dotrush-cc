@@ -8,6 +8,8 @@
 #
 # Environment:
 #   DOTRUSH_CLI_DIR  run DotRushCli.dll from this directory and build nothing
+#   DOTRUSH_CLI_NO_BUILD  when set, fail (exit 1) instead of building a CLI that is not built yet: for callers
+#                    with a short time limit, such as the PreToolUse hook
 #   DOTRUSH_DOTNET   the dotnet host to build and run with (default: dotnet on PATH, in DOTNET_ROOT or a standard install dir)
 #   DOTRUSH_DATA_DIR always exported as the data dir this script derives (CLAUDE_PLUGIN_DATA when set): an
 #                    inherited value is overwritten, so point the CLI at another tree with CLAUDE_PLUGIN_DATA
@@ -95,7 +97,10 @@ else
   hash="$(cli_source_hash "$tools" "$sha256" || true)"
   [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || cli_fail "cannot hash the CLI sources in $tools"
   dir="$data/cli/$hash"
-  [[ -f "$dir/DotRushCli.dll" ]] || cli_build "$tools" "$data" "$hash" "$dotnet"
+  if [[ ! -f "$dir/DotRushCli.dll" ]]; then
+    [[ -z "${DOTRUSH_CLI_NO_BUILD:-}" ]] || cli_fail "the DotRush CLI is not built yet (DOTRUSH_CLI_NO_BUILD is set)"
+    cli_build "$tools" "$data" "$hash" "$dotnet"
+  fi
   # The prune above goes by directory mtime, so record that this build is still in use, not just when it was made.
   touch "$dir" 2>/dev/null || true
 fi
