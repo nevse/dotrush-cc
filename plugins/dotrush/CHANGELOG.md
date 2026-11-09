@@ -1,5 +1,16 @@
 # Changelog
 
+### 0.9.0
+- New skill `dotrush-profile-gc` and `dotrush-profile.sh gc-report`: from a capture taken with `--profile gc-collect`
+  (or `gc-verbose`), the GC mode (workstation or server, heaps, concurrent, hard limit), collections per generation
+  and reason, the pause total and its share of the capture, pause p50/p95/p99/max and the longest pauses. It answers
+  "is GC the problem" before allocations or GC settings are looked at. The numbers come from TraceEvent's GC
+  analysis, which DotRush's `dotnet-trace convert --format Json` now writes as a `gc` object beside the profiles;
+  a `.nettrace.json` converted before that is refused with the advice to delete it and convert again.
+- The CPU, allocation and memory skills point at `dotrush-profile-gc` for pause and time-in-GC questions.
+- The pin moves to DotRush `8a84077` (9 November 2026), whose diagnostics submodule carries the `gc` export
+  (DotRush #230) and the upstream `release/stable` backports of process discovery, gcdump and trace fixes.
+
 ### 0.8.22
 - `dotrush-pick-project.sh wait` (and `apply`) ends again when a reload finishes, instead of `still loading after
   90s`. DotRush reports a workspace load only after its `window/workDoneProgress/create` request succeeds, and

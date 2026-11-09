@@ -92,4 +92,4 @@ Run `"${CLAUDE_PLUGIN_ROOT}/scripts/dotrush-profile.sh" tools` first; it install
 - On Linux and macOS the profiler must normally run as the same user and with the same `TMPDIR` as the target process.
 - If the target is absent from `ps` or attach fails despite the correct user, check sandbox, container, PID-namespace, and diagnostic-socket boundaries. Run the target and profiler in the same boundary; do not substitute an unrelated host PID.
 - Do not upload a trace to speedscope.app or any other external service without explicit permission. Traces can expose assembly, namespace, type, and method names.
-- Use `dotrush-profile-memory` for GC heap growth or suspected managed-memory leaks, and `dotrush-profile-allocations` for allocation volume and what allocates it.
+- Use `dotrush-profile-memory` for GC heap growth or suspected managed-memory leaks, `dotrush-profile-allocations` for allocation volume and what allocates it, and `dotrush-profile-gc` for GC pauses and time in GC.

@@ -21,6 +21,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `scripts/install-dotrush.sh` | installs the DotRush server or profiling tools at the pinned ref: the release bundles when the release ships them, otherwise a build from source (logic shared in `scripts/dotrush-install.sh`) |
 | `scripts/dotrush-profile.sh` | runs DotRush's own `dotnet-trace`/`dotnet-gcdump` at the pinned ref, installed exactly as the server is, then collects and reports bounded CPU and allocation traces or GC dumps |
 | `scripts/summarize-speedscope.py` | derives full-name exclusive/inclusive managed-CPU rankings from Speedscope output, and with `--allocations` allocated MB by type and function from `dotnet-trace --format Json` output |
+| `scripts/summarize-gc.py` | summarizes the `gc` object of `dotnet-trace --format Json` output: GC mode, collections per generation and reason, pause total, share and percentiles, the longest pauses (backs `gc-report`) |
 | `scripts/analyze-gcdump.py` | streams the heap graph DotRush's `dotnet-gcdump --format Json` writes: exact per-type bytes, the largest retained objects with their dominator chain, and snapshot diffs (backs `heap-report`/`heap-diff`) |
 | `scripts/dotrush-diagnostics.sh` | injects `dotrush/solutionDiagnostics` into this session's server, waits for the results the proxy captures, and reports them |
 | `scripts/summarize-diagnostics.py` | summarizes the proxy's `diagnostics.json`: counts by severity and code, errors first, hints hidden unless asked |
@@ -30,6 +31,7 @@ Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | `skills/dotrush-diagnostics/` | runs whole-solution compiler analysis and reports errors and warnings |
 | `skills/dotrush-rename/` | renames a C# symbol across the loaded solution: diff preview, then, after you confirm, an apply that checks every file before replacing any |
 | `skills/dotrush-profile-cpu/` | attaches `dotnet-trace` or launches the target under it, creates Speedscope plus top-method artifacts, and guides evidence-based analysis |
+| `skills/dotrush-profile-gc/` | captures the GC events (`--profile gc-collect`) and reports GC mode, pauses and collections per generation and reason: whether GC is a cost at all |
 | `skills/dotrush-profile-allocations/` | captures a trace with allocation sampling and reports allocated bytes by type, allocating function and call path |
 | `skills/dotrush-profile-memory/` | collects `dotnet-gcdump` snapshots, reports per-type bytes and retention chains, and compares snapshots for managed-memory growth |
 
@@ -142,7 +144,7 @@ pinned ref) has no call-hierarchy handler. Use `findReferences` instead.
 
 ## Profiling .NET applications
 
-The plugin mirrors DotRush's profiling split with three Claude skills:
+The plugin mirrors DotRush's profiling split with four Claude skills:
 
 - Ask Claude to **profile CPU**, find a hot path, investigate high CPU/latency, or invoke
   `dotrush-profile-cpu`. It attaches `dotnet-trace` for a bounded interval, or launches a short-lived program
@@ -152,6 +154,12 @@ The plugin mirrors DotRush's profiling split with three Claude skills:
   how much their share of each capture's managed CPU moved. `--profile`, `--providers` and `--buffersize` add
   events to a capture (for example `gc-verbose`) while the thread-time sampler behind the report stays on. `ps` lists attachable processes with their elapsed
   time, main assembly and command line, and `--filter` narrows the list.
+- Ask Claude **whether GC is the problem**, about GC pauses or time in GC, or invoke `dotrush-profile-gc`. It
+  captures a trace with `--profile gc-collect`, the GC events alone, and `gc-report` gives the GC mode (workstation
+  or server, heaps, concurrent), collections per generation and reason, the pause total and its share of the
+  capture, pause percentiles and the longest pauses, as TraceEvent's GC analysis (PerfView's GCStats) computes them.
+  It reads the `gc` object `dotnet-trace --format Json` writes beside the profiles; a `.nettrace.json` converted
+  without it is refused with the advice to delete it and convert again.
 - Ask Claude **what allocates**, about allocation rate or GC pressure, or invoke `dotrush-profile-allocations`. It
   captures a trace with `--profile gc-verbose`, whose `GCAllocationTick` events sample one allocation per ~100 KB
   with its type and stack, and `alloc-report` ranks allocated MB by type, by the function that allocated and by
@@ -162,7 +170,7 @@ The plugin mirrors DotRush's profiling split with three Claude skills:
   exact per-type bytes and the largest retained objects with the dominator chain that keeps each alive, and
   ranks per-type byte and object-count deltas between a baseline and a later snapshot.
 
-All three skills use `scripts/dotrush-profile.sh`, which runs DotRush's own build of `dotnet-trace` and
+All four skills use `scripts/dotrush-profile.sh`, which runs DotRush's own build of `dotnet-trace` and
 `dotnet-gcdump` ([JaneySprings/diagnostics](https://github.com/JaneySprings/diagnostics)) at the pinned ref. The
 tools are installed into `${CLAUDE_PLUGIN_DATA}/diagnostics` on first use exactly as the server is (see
 [The server auto-installs](#the-server-auto-installs)); a failed build keeps its log in
@@ -171,7 +179,7 @@ the server's is (see [The server auto-installs](#the-server-auto-installs)). `do
 and the state of the server and the tools, installing nothing. `DOTRUSH_DIAGNOSTICS_DIR` uses a ready directory of
 the tools instead.
 
-The memory reports need a `dotnet-gcdump` with `--format Json`, and `alloc-report` a `dotnet-trace` with it; each
+The memory reports need a `dotnet-gcdump` with `--format Json`, and `alloc-report` and `gc-report` a `dotnet-trace` with it; each
 refuses a pinned build without it (`tools` shows `gcdump-json=` and `trace-json=`).
 Artifacts never default into your repository: without an explicit output directory they go to
 `$DOTRUSH_PROFILE_OUTPUT_DIR`, else `profiles/` in the plugin data dir, the same dir the tools are installed into

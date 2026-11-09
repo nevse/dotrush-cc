@@ -1327,6 +1327,161 @@ class AllocReportHelperTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
 
 
+SUMMARIZE_GC = ROOT / "plugins/dotrush/scripts/summarize-gc.py"
+
+
+def collection(number, generation, pause, reason="AllocSmall", kind="NonConcurrentGC", complete=True,
+               before=10.0, after=2.0, promoted=0.5, allocated=8.0, duration=None):
+    """One entry of the converter's gc.processes[].collections, at number * 100 ms into the capture."""
+    return {"number": number, "generation": generation, "type": kind, "reason": reason, "complete": complete,
+            "startMSec": number * 100.0, "pauseStartMSec": number * 100.0 - 0.01, "pauseMSec": pause,
+            "suspendMSec": 0.01, "durationMSec": pause if duration is None else duration,
+            "heapBeforeMB": before, "heapAfterMB": after, "promotedMB": promoted, "allocatedSinceLastMB": allocated}
+
+
+def gc_capture(collections_=None, **process):
+    """A `--format Json` document with a 'gc' object holding one process."""
+    entry = {"processId": 42, "name": "App", "runtimeVersion": "V 10.0.1426.52326", "serverGC": None,
+             "heapCount": 1, "concurrent": True, "hardLimitBytes": 0, "durationMSec": 1000.0,
+             "collections": [
+                 collection(1, 0, 1.0), collection(2, 0, 2.0), collection(3, 1, 3.0, promoted=1.5),
+                 collection(4, 2, 4.0, kind="BackgroundGC", duration=40.0, after=5.0),
+                 collection(5, 2, 10.0, reason="Induced", after=4.0),
+                 collection(6, 0, 99.0, complete=False, after=0.0),
+             ] if collections_ is None else collections_}
+    entry.update(process)
+    return {"shared": {"frames": []}, "profiles": [], "gc": {"processes": [entry]}}
+
+
+class GcReportTests(unittest.TestCase):
+    def report(self, document, *args):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "trace.nettrace.json"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            return subprocess.run([sys.executable, str(SUMMARIZE_GC), str(source), *args],
+                                  capture_output=True, text=True)
+
+    def output(self, document, *args):
+        result = self.report(document, *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_summarizes_pauses_and_leaves_collections_the_capture_cut_off_out_of_them(self):
+        output = self.output(gc_capture())
+
+        self.assertIn("Process\tApp (pid 42)\n", output)
+        self.assertIn("GCMode\tworkstation, 1 heap, concurrent (background gen2)\n", output)
+        self.assertNotIn("HardLimit", output)
+        self.assertIn("Collections\t6 (gen0 3, gen1 1, gen2 2; induced 1; background 1; cut off by the capture 1)\n",
+                      output)
+        self.assertIn("PauseTotal\t20.00 ms (2.00% of the capture)\n", output)
+        self.assertIn("Pause\tp50 3.00 ms, p95 10.00 ms, p99 10.00 ms, max 10.00 ms\n", output)
+        self.assertIn("AllocatedBetweenGCs\t48.00 MB, 48.00 MB/s\n", output)
+        self.assertIn("HeapAfterGC\tfirst 2.00 MB, last 4.00 MB, min 2.00 MB, max 5.00 MB\n", output)
+        self.assertEqual(section(output, "=== Collections by generation ===")[1:], [
+            "0\t3\t3.00\t1.500\t2.000\t0.50",
+            "1\t1\t3.00\t3.000\t3.000\t1.50",
+            "2\t2\t14.00\t7.000\t10.000\t0.50",
+        ])
+        # Ranked by total pause, then by count.
+        self.assertEqual(section(output, "=== Collections by reason ===")[1:], [
+            "AllocSmall\t5\t10.00\t4.000",
+            "Induced\t1\t10.00\t10.000",
+        ])
+
+    def test_lists_the_longest_pauses_with_a_background_gc_duration_beside_its_pause(self):
+        output = self.output(gc_capture(), "--limit", "2")
+
+        self.assertEqual(section(output, "=== Top 2 pauses ===")[1:], [
+            "5\t2\tNonConcurrentGC\tInduced\t499.99\t10.000\t10.000\t10.00\t4.00\t0.50",
+            "4\t2\tBackgroundGC\tAllocSmall\t399.99\t4.000\t40.000\t10.00\t5.00\t0.50",
+        ])
+
+    def test_names_a_server_gc_with_its_heaps_and_hard_limit(self):
+        output = self.output(gc_capture(serverGC=True, heapCount=8, concurrent=False, hardLimitBytes=512 * MB))
+
+        self.assertIn("GCMode\tserver, 8 heaps, non-concurrent\n", output)
+        self.assertIn("HardLimit\t512.00 MB\n", output)
+
+    def test_prints_each_process_that_collected(self):
+        document = gc_capture()
+        other = dict(document["gc"]["processes"][0], processId=7, name="Child")
+        document["gc"]["processes"] += [other, dict(other, processId=8, collections=[])]
+
+        output = self.output(document)
+
+        self.assertIn("=== Process 1 of 2 ===\nProcess\tApp (pid 42)\n", output)
+        self.assertIn("=== Process 2 of 2 ===\nProcess\tChild (pid 7)\n", output)
+        self.assertNotIn("pid 8", output)
+
+    def test_refuses_a_file_without_gc_export_or_without_collections(self):
+        old = self.report({"shared": {"frames": []}, "profiles": []})
+        empty = self.report(gc_capture([]))
+
+        self.assertEqual(old.returncode, 1)
+        self.assertIn("does not export GC events", old.stderr)
+        self.assertIn("Delete it", old.stderr)
+        self.assertEqual(empty.returncode, 1)
+        self.assertIn("no garbage collections", empty.stderr)
+        self.assertIn("--profile gc-collect", empty.stderr)
+
+
+class GcReportHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root)
+        dotnet = self.root / "dotnet-stub"
+        dotnet.write_text(FAKE_DOTNET, encoding="utf-8")
+        dotnet.chmod(0o755)
+        self.log = self.root / "calls.log"
+        self.env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.root),
+            "DOTRUSH_DOTNET": str(dotnet),
+            "DOTRUSH_DIAGNOSTICS_DIR": str(make_bundle(self.root / "bundle")),
+            "STUB_LOG": str(self.log),
+            "STUB_NETTRACE_JSON": json.dumps(gc_capture()),
+        }
+
+    def gc_report(self, *args, **env):
+        return subprocess.run(["bash", str(PROFILE_SH), "gc-report", *map(str, args)],
+                              capture_output=True, text=True, env={**self.env, **env})
+
+    def test_converts_a_nettrace_once_and_names_its_runtime(self):
+        trace = self.root / "trace_1.nettrace"
+        trace.write_bytes(CORELIB.encode("utf-16-le"))
+
+        first = self.gc_report(trace, 1)
+        again = self.gc_report(trace)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn(f"Source\t{self.root / 'trace_1.nettrace.json'}\n", first.stdout)
+        self.assertIn("Runtime\t10.0.10\n", first.stdout)
+        self.assertEqual(len(section(first.stdout, "=== Top 1 pauses ===")), 2)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        converts = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        converts = [call for call in converts if call[1] == "convert" and "--help" not in call]
+        self.assertEqual(len(converts), 1)
+
+    def test_refuses_bad_arguments(self):
+        speedscope = self.root / "t.speedscope.json"
+        speedscope.write_text("{}", encoding="utf-8")
+        trace = self.root / "t.nettrace.json"
+        trace.write_text(json.dumps(gc_capture()), encoding="utf-8")
+        cases = {
+            (speedscope,): "pass the .nettrace it was converted from",
+            (self.root / "missing.nettrace",): "trace not found",
+            (trace, 0): "positive count",
+            (trace, 5, 1): "takes a trace and a count",
+            ("--focus", "x"): "unknown gc-report option: --focus",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                result = self.gc_report(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+
+
 class ProcessListTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())

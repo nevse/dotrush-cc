@@ -72,6 +72,7 @@ The `gc-verbose` profile makes the runtime raise a `GCAllocationTick` event abou
 
 ## Boundaries
 
+- Allocation sampling says what was allocated, not what it costs: whether the collections it causes are a real share of the time is `dotrush-profile-gc`'s question, and the same `gc-verbose` trace answers it with `gc-report`.
 - Allocation sampling says what was allocated, not what survives. For heap growth, retained objects or leaks, use `dotrush-profile-memory`. A high allocation rate with a flat heap is GC pressure, not a leak.
 - It measures managed allocations only; native memory is invisible to it.
 - On Linux and macOS the profiler must normally run as the same user and with the same `TMPDIR` as the target process.

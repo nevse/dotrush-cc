@@ -18,6 +18,7 @@ Usage:
   dotrush-profile.sh trace-diff <baseline-trace> <current-trace> [count] [baseline-thread-id current-thread-id]
   dotrush-profile.sh alloc-report <trace.nettrace|trace.nettrace.json> [count]
                      [--focus <function|type> [--depth <levels>]]
+  dotrush-profile.sh gc-report <trace.nettrace|trace.nettrace.json> [count]
   dotrush-profile.sh heap <pid> [output-dir]
   dotrush-profile.sh heap-report <snapshot.gcdump|snapshot.gcdump.json> [count]
   dotrush-profile.sh heap-diff <baseline.gcdump|.gcdump.json> <current.gcdump|.gcdump.json> [count]
@@ -52,6 +53,13 @@ Allocations:
   It converts the .nettrace with dotnet-trace --format Json, into a .nettrace.json beside it.
   --focus takes a function, printing its callers and the types it allocates below it, or a type,
   printing who allocates it; it resolves names as trace-report --focus does.
+
+Garbage collections:
+  gc-report summarizes the collections of a capture taken with --profile gc-collect (GC events
+  only, low overhead) or gc-verbose: GC mode, collection counts, pauses (total, share of the
+  capture, p50/p95/p99/max), by generation and by reason, and the count longest pauses. It reads
+  the same .nettrace.json as alloc-report; one converted before GC export is refused, delete it to
+  convert again.
 
 Comparing:
   trace-diff ranks functions by how much their share of their own capture's managed CPU moved,
@@ -255,7 +263,7 @@ ensure_nettrace_json() {
     return
   fi
   [[ "$trace_file" != *.speedscope.json ]] \
-    || fail "a speedscope file has no allocation samples; pass the .nettrace it was converted from"
+    || fail "a speedscope file has no allocation samples or GC events; pass the .nettrace it was converted from"
   json_file="$(change_extension "$trace_file" nettrace.json)"
   if [[ ! -f "$json_file" ]]; then
     use_bundle trace-json
@@ -564,6 +572,21 @@ case "$command_name" in
     [[ -n "$focus" ]] && args+=(--focus "$focus")
     [[ -n "$depth" ]] && args+=(--depth "$depth")
     python3 "$SCRIPT_DIR/summarize-speedscope.py" "${args[@]}"
+    ;;
+
+  gc-report)
+    shift
+    (( $# <= 2 )) || fail "gc-report takes a trace and a count"
+    trace_file="${1-}"
+    count="${2-30}"
+    [[ "$trace_file" != --* ]] || fail "unknown gc-report option: $trace_file"
+    [[ -f "$trace_file" ]] || fail "trace not found: $trace_file"
+    require_count "$count"
+    json_file="$(ensure_nettrace_json "$trace_file")" || exit 1
+    args=("$json_file" --limit "$count")
+    nettrace="$(nettrace_for "$json_file")"
+    [[ -f "$nettrace" ]] && args+=(--nettrace "$nettrace")
+    python3 "$SCRIPT_DIR/summarize-gc.py" "${args[@]}"
     ;;
 
   trace-diff)

@@ -62,4 +62,4 @@ Do not upload, commit, or casually share `.gcdump`, `.gcdump.json` and report ar
 - If collection fails because heap events were dropped or memory is constrained, stop and report that limitation rather than retrying repeatedly against a sensitive process.
 - The `.gcdump.json` is larger than the `.gcdump`. The report reads it as a stream but keeps about 8 bytes per object in memory, so a heap of tens of millions of objects needs hundreds of megabytes to report on.
 - For a full process dump, native-memory investigation, or deadlock analysis, use `dotnet-dump` or platform tools; this skill intentionally collects only GC dumps.
-- Use `dotrush-profile-cpu` for high CPU, hot paths, or latency traces, and `dotrush-profile-allocations` for allocation rate and what allocates.
+- Use `dotrush-profile-cpu` for high CPU, hot paths, or latency traces, `dotrush-profile-allocations` for allocation rate and what allocates, and `dotrush-profile-gc` for GC pauses and time in GC.

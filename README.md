@@ -96,6 +96,14 @@ and file names are not renamed (the `dotrush-rename` skill).
 Claude finds the process (or asks which one), captures a `dotnet-trace`, and reports the hottest methods
 with their exclusive and inclusive time, pointing out where JIT inlining moved samples into a caller.
 
+**Check whether GC is the problem**:
+
+> requests stall every few seconds — is it the GC?
+
+Claude captures the GC events alone (`--profile gc-collect`, low overhead) and reports the GC mode, collections per
+generation, the share of the capture spent in pauses, pause percentiles and the longest pauses with their reasons,
+then says whether to chase allocations, retention, or something other than the GC.
+
 **Find what allocates**:
 
 > this import loop triggers a gen0 GC every few milliseconds — what is allocating?
@@ -121,6 +129,8 @@ P=$(ls -d ~/.claude/plugins/cache/dotrush-cc/dotrush/*/ | sort -V | tail -1)   #
 "$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 # always hh:mm:ss — 00:30 would mean 30 minutes
 "$P/scripts/dotrush-profile.sh" trace --launch 00:02:00 -- dotnet bin/Release/net10.0/Bench.dll  # trace from startup
 "$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 --profile gc-verbose   # add GC and allocation events to the capture
+"$P/scripts/dotrush-profile.sh" trace 12345 00:00:30 --profile gc-collect   # GC events only, low overhead
+"$P/scripts/dotrush-profile.sh" gc-report trace.nettrace 20                       # GC mode, pauses, collections by generation and reason
 "$P/scripts/dotrush-profile.sh" alloc-report trace.nettrace 20                    # what that capture allocated, by type and function
 "$P/scripts/dotrush-profile.sh" alloc-report trace.nettrace --focus "System.String (Small)"  # who allocates one type
 "$P/scripts/dotrush-profile.sh" trace-report trace.nettrace 20 --focus Sheet.GetReference  # callers and callees of one function
@@ -159,6 +169,7 @@ dotrush-cc/
     ├── scripts/dotrush-install.sh        # shared install logic: one ref, release bundles or a build from source
     ├── scripts/dotrush-profile.sh        # collects/reports bounded CPU and allocation traces and GC dumps
     ├── scripts/summarize-speedscope.py   # produces agent-readable managed-CPU and allocation rankings
+    ├── scripts/summarize-gc.py           # summarizes a capture's GC events: pauses, generations, reasons
     ├── scripts/analyze-gcdump.py         # streams gcdump JSON: per-type bytes, retention chains, snapshot diffs
     ├── scripts/dotrush-diagnostics.sh    # runs solution analysis in the session's server and reports the results
     ├── scripts/summarize-diagnostics.py  # summarizes the diagnostics the proxy captures
@@ -168,6 +179,7 @@ dotrush-cc/
     ├── skills/dotrush-diagnostics/       # whole-solution compiler errors and warnings
     ├── skills/dotrush-rename/            # semantic rename: preview, confirm, apply (checks every file first)
     ├── skills/dotrush-profile-cpu/       # CPU, hot-path, and latency profiling workflow
+    ├── skills/dotrush-profile-gc/        # GC events: pauses, collections per generation, GC mode
     ├── skills/dotrush-profile-allocations/ # allocation sampling: what allocates, by type and call path
     ├── skills/dotrush-profile-memory/    # managed-heap snapshot and comparison workflow
     ├── README.md                         # plugin usage
